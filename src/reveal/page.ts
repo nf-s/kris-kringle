@@ -1,8 +1,13 @@
-import type { RevealKind, RevealResponse } from '../../shared/schema';
+import {
+  REVEAL_KINDS,
+  REVEAL_LABELS,
+  type RevealKind,
+  type RevealResponse,
+} from '../../shared/schema';
 import { ApiError, fetchReveal, markOpened } from '../api';
 import { button, h } from '../dom';
 import { REVEAL_FACTORIES } from './registry';
-import { createSfx } from './sfx';
+import { createSfx, type Sfx } from './sfx';
 import { createStage } from './stage';
 
 export type RevealSource =
@@ -37,8 +42,21 @@ function renderMessage(root: HTMLElement, text: string): void {
   root.replaceChildren(h('main', { class: 'reveal reveal--message' }, h('p', {}, text)));
 }
 
-function start(root: HTMLElement, source: RevealSource, data: RevealResponse): void {
-  const sfx = createSfx();
+/** Carried across replays so sound stays unlocked and the mute choice sticks. */
+interface Session {
+  sfx: Sfx;
+  muted: boolean;
+  /** True once the name has been revealed and the person is trying another reveal. */
+  replay: boolean;
+}
+
+function start(
+  root: HTMLElement,
+  source: RevealSource,
+  data: RevealResponse,
+  session: Session,
+): void {
+  const { sfx } = session;
   const canvas = h('canvas', { class: 'reveal__canvas' });
   const hint = h('p', { class: 'reveal__hint', 'aria-live': 'polite' });
   const progressBar = h('div', { class: 'progress__bar' });
@@ -56,11 +74,22 @@ function start(root: HTMLElement, source: RevealSource, data: RevealResponse): v
   );
   if (data.note) card.lastElementChild?.append(h('p', { class: 'card__note' }, data.note));
 
-  let muted = false;
-  const sound = button('Sound on', 'reveal__sound', () => {
-    muted = !muted;
-    sfx.setMuted(muted);
-    sound.textContent = muted ? 'Sound off' : 'Sound on';
+  const choices = h('div', { class: 'card__choices' });
+  for (const kind of REVEAL_KINDS) {
+    if (kind === data.reveal) continue;
+    choices.append(
+      button(REVEAL_LABELS[kind], 'card__choice', () => {
+        stage.destroy();
+        start(root, source, { ...data, reveal: kind }, { ...session, replay: true });
+      }),
+    );
+  }
+  card.append(h('div', { class: 'card__again' }, h('p', {}, 'Try another'), choices));
+
+  const sound = button(session.muted ? 'Sound off' : 'Sound on', 'reveal__sound', () => {
+    session.muted = !session.muted;
+    sfx.setMuted(session.muted);
+    sound.textContent = session.muted ? 'Sound off' : 'Sound on';
   });
 
   const page = h(
@@ -79,7 +108,7 @@ function start(root: HTMLElement, source: RevealSource, data: RevealResponse): v
   );
   root.replaceChildren(page);
 
-  createStage({
+  const stage = createStage({
     canvas,
     receiverName: data.receiverName,
     factory: REVEAL_FACTORIES[data.reveal],
@@ -95,7 +124,7 @@ function start(root: HTMLElement, source: RevealSource, data: RevealResponse): v
       window.setTimeout(() => {
         card.hidden = false;
       }, CARD_DELAY_MS);
-      if (source.type === 'token') {
+      if (source.type === 'token' && !session.replay) {
         // Only affects the admin's "opened" column, so a failure here is safe to ignore.
         markOpened(source.token).catch(() => undefined);
       }
@@ -106,14 +135,16 @@ function start(root: HTMLElement, source: RevealSource, data: RevealResponse): v
 export function mountReveal(root: HTMLElement, source: RevealSource): void {
   document.body.className = 'reveal-body';
 
+  const session: Session = { sfx: createSfx(), muted: false, replay: false };
+
   if (source.type === 'preview') {
-    start(root, source, previewData(source.reveal));
+    start(root, source, previewData(source.reveal), session);
     return;
   }
 
   renderMessage(root, 'Loading');
   fetchReveal(source.token).then(
-    (data) => start(root, source, data),
+    (data) => start(root, source, data, session),
     (error: unknown) => {
       if (error instanceof ApiError && error.status === 409) {
         renderMessage(root, 'Names have not been drawn yet. Try this link again later.');
