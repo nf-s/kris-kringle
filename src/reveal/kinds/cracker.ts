@@ -1,9 +1,21 @@
-import { PALETTE, Spring, clamp, glow, lerp, softShadow, sparkle } from '../draw';
+import { PALETTE, Spring, clamp, glow, lerp, rand, softShadow, sparkle } from '../draw';
 import type { Point, RevealFactory } from '../engine';
 
 const COMPLETE_DELAY = 0.35;
-const HINT = 'Pull one end';
 const FLASH_RGB = '255, 248, 230';
+
+/** Most tear one pull can add before the paper slips out of the fingers. */
+const SLIP_AT = 0.3;
+/** Tear added per second at full strain. */
+const TEAR_RATE = 0.5;
+/** Tear lost per second while nobody is pulling, down to the last slip. */
+const RELAX_RATE = 0.03;
+/** Fraction of a full pull before the paper starts to tear. */
+const STRAIN_START = 0.45;
+/** Pixels kept clear between a full pull and the stage edge. */
+const EDGE_MARGIN = 14;
+const TAP_TIME = 0.35;
+const TAP_SLOP = 10;
 
 /** Design units along the cracker's axis, measured from its centre. */
 const REST_SPAN = 330;
@@ -19,17 +31,43 @@ const SHOULDER_RADIUS = 30;
 const TILT = -0.1;
 
 interface Layout {
+  /** Centre of the cracker, including any drag offset. */
   cx: number;
   cy: number;
+  /** Centre of the cracker at rest. */
+  restX: number;
+  restY: number;
   unit: number;
   threshold: number;
 }
 
-interface Grab {
+interface EndGrab {
+  kind: 'end';
   side: number;
   /** Pointer position along the pull axis, in pixels, that corresponds to zero stretch. */
   anchor: number;
-  threshold: number;
+  /** Pull distance, in pixels, that counts as full strength. */
+  full: number;
+  pull: number;
+  /** Tear this pull has added so far. */
+  gained: number;
+}
+
+interface BarrelGrab {
+  kind: 'barrel';
+  side: number;
+  start: Point;
+  origin: Point;
+  startedAt: number;
+  moved: boolean;
+}
+
+type Grab = EndGrab | BarrelGrab;
+
+interface Damage {
+  amount: number;
+  /** Tear locked in by the last slip on this side. */
+  floor: number;
 }
 
 interface Snapped {
@@ -216,10 +254,47 @@ function neckEdge(
   ctx.bezierCurveTo(lerp(middle, to, 0.3), pinch, lerp(middle, to, 0.4), toRadius, to, toRadius);
 }
 
-/** Pinched, pleated neck and its gold tie, in mirrored coordinates. */
-function drawNeck(ctx: CanvasRenderingContext2D, from: number, to: number, glintX: number): void {
+/** Jagged rips in from both edges just outside the tie. Call inside a clip to the neck. */
+function drawTear(ctx: CanvasRenderingContext2D, x: number, radius: number, damage: number): void {
+  const width = 5 + 9 * damage;
+  const depth = radius * (0.25 + 0.75 * damage);
+  ctx.lineWidth = 1.1;
+  ctx.lineJoin = 'round';
+  for (const edge of [-1, 1]) {
+    const outside = edge * (SHOULDER_RADIUS + 4);
+    ctx.beginPath();
+    ctx.moveTo(x, outside);
+    ctx.lineTo(x + width * 0.2, edge * (radius - depth * 0.55));
+    ctx.lineTo(x + width * 0.35, edge * (radius - depth * 0.3));
+    ctx.lineTo(x + width * 0.55, edge * (radius - depth));
+    ctx.lineTo(x + width * 0.72, edge * (radius - depth * 0.45));
+    ctx.lineTo(x + width * 0.85, edge * (radius - depth * 0.7));
+    ctx.lineTo(x + width, outside);
+    ctx.fillStyle = 'rgba(70, 12, 28, 0.88)';
+    ctx.fill();
+    ctx.strokeStyle = PALETTE.cream;
+    ctx.stroke();
+  }
+  if (damage <= 0.5) return;
+  ctx.beginPath();
+  ctx.moveTo(x + width * 0.55, -radius + depth);
+  ctx.lineTo(x + width * 0.45, 0);
+  ctx.lineTo(x + width * 0.55, radius - depth);
+  ctx.strokeStyle = `rgba(70, 12, 28, ${(damage - 0.5) * 1.4})`;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+/** Pinched, pleated neck and its gold tie, in mirrored coordinates. `damage` is 0 to 1. */
+function drawNeck(
+  ctx: CanvasRenderingContext2D,
+  from: number,
+  to: number,
+  glintX: number,
+  damage: number,
+): void {
   const rest = END_INNER - NECK_START;
-  const radius = NECK_RADIUS * Math.sqrt(rest / Math.max(rest, to - from));
+  const radius = NECK_RADIUS * Math.sqrt(rest / Math.max(rest, to - from)) * (1 - 0.35 * damage);
   const middle = (from + to) / 2;
   const outline = (): void => {
     ctx.beginPath();
@@ -252,25 +327,59 @@ function drawNeck(ctx: CanvasRenderingContext2D, from: number, to: number, glint
   ctx.fill();
   ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
   ctx.fillRect(middle - 2.5, -radius - 1, 2, Math.max(2, radius * 0.7));
+
+  if (damage <= 0.01) return;
+  ctx.save();
+  outline();
+  ctx.clip();
+  drawTear(ctx, middle + 7, radius, damage);
+  ctx.restore();
+}
+
+/** Soft limit: follows `value` near zero and eases towards `range`. */
+function rubber(value: number, range: number): number {
+  return range * Math.tanh(value / range);
 }
 
 export const createCracker: RevealFactory = (stage) => {
   const leftStretch = new Spring(0, 300, 11);
   const rightStretch = new Spring(0, 300, 11);
   const rock = new Spring(0, 90, 5);
+  /** Drag offset of the whole cracker, in pixels. */
+  const offX = new Spring(0, 140, 8);
+  const offY = new Spring(0, 140, 8);
+  const leftDamage: Damage = { amount: 0, floor: 0 };
+  const rightDamage: Damage = { amount: 0, floor: 0 };
   let grab: Grab | null = null;
   let tension = 0;
   let snapped: Snapped | null = null;
   let completeSent = false;
+  let rattles = 0;
+  let nextRattle = 0;
+  let hint = '';
+  let shownProgress = 0;
 
-  stage.setHint(HINT);
+  function showHint(): void {
+    const total = totalTear();
+    const next =
+      total < SLIP_AT * 0.9 ? 'Pull one end' : total < 0.55 ? 'Pull harder' : 'Nearly there';
+    if (next === hint) return;
+    hint = next;
+    stage.setHint(next);
+  }
+
+  showHint();
 
   function layout(): Layout {
     const scale = clamp(Math.min(stage.width / 420, stage.height / 640), 0.55, 1.5);
     const span = Math.max(120, Math.min(stage.width * 0.78, REST_SPAN * scale));
+    const restX = stage.width / 2;
+    const restY = stage.height * 0.52;
     return {
-      cx: stage.width / 2,
-      cy: stage.height * 0.52,
+      cx: restX + offX.value,
+      cy: restY + offY.value,
+      restX,
+      restY,
       unit: span / REST_SPAN,
       threshold: clamp(stage.width * 0.18, 60, 130),
     };
@@ -278,6 +387,21 @@ export const createCracker: RevealFactory = (stage) => {
 
   function stretchOf(side: number): Spring {
     return side < 0 ? leftStretch : rightStretch;
+  }
+
+  function damageOf(side: number): Damage {
+    return side < 0 ? leftDamage : rightDamage;
+  }
+
+  function totalTear(): number {
+    return leftDamage.amount + rightDamage.amount;
+  }
+
+  function showProgress(): void {
+    const total = clamp(totalTear(), 0, 1);
+    if (Math.abs(total - shownProgress) < 0.002) return;
+    shownProgress = total;
+    stage.setProgress(total);
   }
 
   function barrelShift(): number {
@@ -289,6 +413,7 @@ export const createCracker: RevealFactory = (stage) => {
     return (
       TILT +
       rock.value +
+      clamp(offX.velocity * 0.0005, -0.25, 0.25) +
       Math.sin(stage.time * 1.4) * 0.03 * (1 - tension) +
       Math.sin(stage.time * 51) * strain * 0.012
     );
@@ -296,22 +421,25 @@ export const createCracker: RevealFactory = (stage) => {
 
   /** Pointer position along the fixed pull axis for one side, in pixels. */
   function along(point: Point, l: Layout, side: number): number {
-    return ((point.x - l.cx) * Math.cos(TILT) + (point.y - l.cy) * Math.sin(TILT)) * side;
+    return ((point.x - l.restX) * Math.cos(TILT) + (point.y - l.restY) * Math.sin(TILT)) * side;
+  }
+
+  /** Centre of the neck on one side, in stage pixels. */
+  function neckPoint(l: Layout, side: number, a: number): Point {
+    const middle =
+      side * ((NECK_START + side * barrelShift() + END_INNER + stretchOf(side).value) / 2);
+    return { x: l.cx + Math.cos(a) * middle * l.unit, y: l.cy + Math.sin(a) * middle * l.unit };
   }
 
   function snap(l: Layout, side: number): void {
     const a = angle();
-    const neckMiddle =
-      side * ((NECK_START + side * barrelShift() + END_INNER + stretchOf(side).value) / 2);
-    const origin = {
-      x: l.cx + Math.cos(a) * neckMiddle * l.unit,
-      y: l.cy + Math.sin(a) * neckMiddle * l.unit,
-    };
+    const origin = neckPoint(l, side, a);
     snapped = { at: stage.time, side, angle: a, origin };
     grab = null;
     stage.sfx.snap();
     stage.shake(26);
     stage.haptic([40, 30, 90]);
+    hint = '';
     stage.setHint('');
     stage.setProgress(1);
     stage.particles.burst({
@@ -348,28 +476,96 @@ export const createCracker: RevealFactory = (stage) => {
     });
   }
 
-  function drag(point: Point): void {
-    if (grab === null || snapped !== null) return;
-    const l = layout();
-    const pull = Math.max(0, along(point, l, grab.side) - grab.anchor);
-    const held = stretchOf(grab.side);
+  /** The paper slips out of the fingers: the tear so far is kept and the end springs back. */
+  function slip(l: Layout, g: EndGrab): void {
+    const total = totalTear();
+    const damage = damageOf(g.side);
+    damage.floor = damage.amount;
+    const held = stretchOf(g.side);
+    const origin = neckPoint(l, g.side, angle());
+    grab = null;
+    held.target = 0;
+    held.velocity = -held.value * 10;
+    stretchOf(-g.side).target = 0;
+    rock.velocity += g.side * 0.6;
+    stage.sfx.crack(0.3 + 0.4 * total);
+    stage.haptic([12, 25, 18]);
+    stage.shake(5 + 6 * total);
+    stage.particles.burst({
+      ...origin,
+      count: 8,
+      colors: [PALETTE.red, PALETTE.cream, PALETTE.redLight, PALETTE.gold],
+      shapes: ['rect', 'shard'],
+      angle: -Math.PI / 2,
+      spread: Math.PI * 1.4,
+      speed: [120, 420],
+      size: [4, 9],
+      life: [0.5, 1],
+      gravity: 1000,
+    });
+    showHint();
+  }
+
+  /** Holding an end past the strain point tears the paper, up to one slip's worth per pull. */
+  function strain(l: Layout, g: EndGrab, dt: number): void {
+    const amount = clamp((g.pull / g.full - STRAIN_START) / (1 - STRAIN_START), 0, 1);
+    if (amount <= 0) return;
+    const gain = Math.min(TEAR_RATE * amount * dt, SLIP_AT - g.gained);
+    damageOf(g.side).amount += gain;
+    g.gained += gain;
+    stage.sfx.rub(amount);
+    showProgress();
+    if (totalTear() >= 1) snap(l, g.side);
+    else if (g.gained >= SLIP_AT - 0.0001) slip(l, g);
+  }
+
+  function relax(damage: Damage, dt: number): void {
+    damage.amount = Math.max(damage.floor, damage.amount - RELAX_RATE * dt);
+  }
+
+  function playRattles(): void {
+    if (rattles <= 0 || stage.time < nextRattle) return;
+    stage.sfx.tap(rand(0.75, 1.25) * (0.8 + 0.1 * rattles));
+    rattles -= 1;
+    nextRattle = stage.time + rand(0.06, 0.1);
+  }
+
+  function dragEnd(g: EndGrab, point: Point, l: Layout): void {
+    const pull = Math.max(0, along(point, l, g.side) - g.anchor);
+    const held = stretchOf(g.side);
+    g.pull = pull;
     held.value = pull / l.unit;
     held.velocity = 0;
-    stretchOf(-grab.side).target = held.value * 0.22;
-    tension = clamp(pull / grab.threshold, 0, 1);
-    stage.setProgress(tension);
-    stage.setHint(tension > 0.6 ? 'Keep pulling' : HINT);
+    stretchOf(-g.side).target = held.value * 0.22;
+    tension = clamp(pull / g.full, 0, 1);
     if (tension > 0.05) stage.sfx.stretch(tension);
-    if (pull >= grab.threshold) snap(l, grab.side);
+  }
+
+  function dragBarrel(g: BarrelGrab, point: Point): void {
+    const dx = point.x - g.start.x;
+    const dy = point.y - g.start.y;
+    if (Math.hypot(dx, dy) > TAP_SLOP) g.moved = true;
+    offX.target = rubber(g.origin.x + dx, Math.max(8, stage.width * 0.06));
+    offY.target = rubber(g.origin.y + dy, Math.max(20, Math.min(stage.height * 0.12, 90)));
   }
 
   function release(): void {
-    if (grab === null) return;
-    rock.velocity += grab.side * tension * 0.8;
-    stretchOf(-grab.side).target = 0;
+    const g = grab;
+    if (g === null) return;
     grab = null;
-    stage.setProgress(0);
-    stage.setHint(HINT);
+    if (g.kind === 'end') {
+      rock.velocity += g.side * tension * 0.8;
+      stretchOf(-g.side).target = 0;
+      return;
+    }
+    offX.target = 0;
+    offY.target = 0;
+    if (g.moved || stage.time - g.startedAt > TAP_TIME) return;
+    rock.velocity += g.side * 0.9;
+    offY.velocity -= 240;
+    rattles = 3;
+    nextRattle = stage.time;
+    stage.haptic(10);
   }
 
   function drawSide(
@@ -381,8 +577,15 @@ export const createCracker: RevealFactory = (stage) => {
     const stretch = Math.max(0, stretchOf(side).value);
     ctx.save();
     ctx.scale(side, 1);
-    if (withNeck)
-      drawNeck(ctx, NECK_START + side * barrelShift(), END_INNER + stretch, side * glintX);
+    if (withNeck) {
+      drawNeck(
+        ctx,
+        NECK_START + side * barrelShift(),
+        END_INNER + stretch,
+        side * glintX,
+        clamp(damageOf(side).amount, 0, 1),
+      );
+    }
     drawEnd(ctx, stretch, side * glintX);
     ctx.restore();
   }
@@ -418,7 +621,15 @@ export const createCracker: RevealFactory = (stage) => {
     const sweep = (stage.time % 3.6) / 1.1;
     const glintX = sweep < 1 ? lerp(-260, 260, sweep) : 9999;
     const reach = END_OUTER + (leftStretch.value + rightStretch.value) / 2;
-    softShadow(ctx, l.cx, l.cy + 72 * l.unit, reach * 1.05 * l.unit, 17 * l.unit, 0.24);
+    const lift = clamp(-offY.value / (120 * l.unit), 0, 1);
+    softShadow(
+      ctx,
+      l.cx,
+      l.restY + 72 * l.unit,
+      reach * 1.05 * l.unit * (1 - 0.25 * lift),
+      17 * l.unit,
+      0.24 * (1 - 0.5 * lift),
+    );
     const offset = { x: -Math.sin(a) * tremble, y: Math.cos(a) * tremble + bob };
     withPiece(ctx, l, a, 0, offset, 0, 1, () => {
       drawSide(ctx, -1, glintX, true);
@@ -439,7 +650,7 @@ export const createCracker: RevealFactory = (stage) => {
       1 - clamp(elapsed / 0.3, 0, 1),
     );
     if (alpha <= 0) return;
-    softShadow(ctx, l.cx, l.cy + 72 * l.unit, END_OUTER * l.unit, 17 * l.unit, 0.24 * alpha);
+    softShadow(ctx, l.cx, l.restY + 72 * l.unit, END_OUTER * l.unit, 17 * l.unit, 0.24 * alpha);
     const axis = { x: Math.cos(s.angle) * s.side, y: Math.sin(s.angle) * s.side };
     const fall = 750 * elapsed * elapsed;
     const endOffset = {
@@ -463,6 +674,9 @@ export const createCracker: RevealFactory = (stage) => {
   return {
     update(dt) {
       rock.update(dt);
+      offX.update(dt);
+      offY.update(dt);
+      playRattles();
       const l = layout();
       if (snapped !== null) {
         if (!completeSent && stage.time - snapped.at > COMPLETE_DELAY) {
@@ -471,17 +685,21 @@ export const createCracker: RevealFactory = (stage) => {
         }
         return;
       }
-      if (grab === null) {
-        leftStretch.update(dt);
-        rightStretch.update(dt);
-        tension = clamp(
-          (Math.max(leftStretch.value, rightStretch.value) * l.unit) / l.threshold,
-          0,
-          1,
-        );
-      } else {
+      if (grab !== null && grab.kind === 'end') {
         stretchOf(-grab.side).update(dt);
+        strain(l, grab, dt);
+        return;
       }
+      leftStretch.update(dt);
+      rightStretch.update(dt);
+      tension = clamp(
+        (Math.max(leftStretch.value, rightStretch.value) * l.unit) / l.threshold,
+        0,
+        1,
+      );
+      relax(leftDamage, dt);
+      relax(rightDamage, dt);
+      showProgress();
     },
     draw(ctx) {
       const l = layout();
@@ -489,7 +707,7 @@ export const createCracker: RevealFactory = (stage) => {
       else drawSnapped(ctx, l, snapped);
     },
     onPointerDown(point) {
-      if (snapped !== null) return;
+      if (snapped !== null || grab !== null) return;
       const l = layout();
       const a = angle();
       const dx = point.x - l.cx;
@@ -501,26 +719,45 @@ export const createCracker: RevealFactory = (stage) => {
       const pad = 26 / l.unit;
       const side = local.x < 0 ? -1 : 1;
       const distance = Math.abs(local.x);
-      if (Math.abs(local.y) > END_OUTER_RADIUS + pad) return;
-      if (distance < BARREL_HALF - 8) {
-        rock.velocity += side * 0.9;
-        stage.sfx.tap();
+      const held = stretchOf(side);
+      const onEnd =
+        distance >= BARREL_HALF - 8 &&
+        distance <= END_OUTER + held.value + pad &&
+        Math.abs(local.y) <= END_OUTER_RADIUS + pad;
+      if (onEnd) {
+        const room = (side > 0 ? stage.width - point.x : point.x) * Math.cos(TILT);
+        grab = {
+          kind: 'end',
+          side,
+          anchor: along(point, l, side) - held.value * l.unit,
+          full: clamp(room - EDGE_MARGIN, 12, l.threshold),
+          pull: held.value * l.unit,
+          gained: 0,
+        };
+        stage.sfx.tap(1.2);
+        stage.haptic(8);
         return;
       }
-      const held = stretchOf(side);
-      if (distance > END_OUTER + held.value + pad) return;
-      const room = (side > 0 ? stage.width - point.x : point.x) / Math.cos(TILT);
+      if (distance >= BARREL_HALF - 8 || Math.abs(local.y) > BARREL_RADIUS + pad) return;
       grab = {
+        kind: 'barrel',
         side,
-        anchor: along(point, l, side) - held.value * l.unit,
-        threshold: clamp(room - 14, 30, l.threshold),
+        start: point,
+        origin: { x: offX.value, y: offY.value },
+        startedAt: stage.time,
+        moved: false,
       };
-      stage.sfx.tap(1.2);
-      stage.haptic(8);
+      stage.haptic(6);
     },
     onPointerMove(point, down) {
-      if (down) drag(point);
-      else release();
+      if (!down) {
+        release();
+        return;
+      }
+      const g = grab;
+      if (g === null || snapped !== null) return;
+      if (g.kind === 'end') dragEnd(g, point, layout());
+      else dragBarrel(g, point);
     },
     onPointerUp: release,
   };

@@ -1,12 +1,12 @@
 import { z } from 'zod';
 
-export const revealKindSchema = z.enum(['egg', 'frost', 'present', 'cracker', 'globe']);
+export const revealKindSchema = z.enum(['egg', 'jack', 'present', 'cracker', 'globe']);
 export type RevealKind = z.infer<typeof revealKindSchema>;
 export const REVEAL_KINDS: readonly RevealKind[] = revealKindSchema.options;
 
 export const REVEAL_LABELS: Record<RevealKind, string> = {
   egg: 'Crack the egg',
-  frost: 'Wipe the frosted window',
+  jack: 'Wind the jack-in-the-box',
   present: 'Untie the present',
   cracker: 'Pull the cracker',
   globe: 'Shake the snow globe',

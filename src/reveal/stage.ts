@@ -42,7 +42,8 @@ export function createStage(options: StageOptions): StageHandle {
   let drizzleDebt = 0;
   let frame = 0;
   let lastTimestamp: number | null = null;
-  let pointerDown = false;
+  /** Only the first finger down is tracked; extra touches are ignored. */
+  let activePointer: number | null = null;
 
   const stage: Stage = {
     get width() {
@@ -93,7 +94,7 @@ export function createStage(options: StageOptions): StageHandle {
 
   function resize(): void {
     const rect = canvas.getBoundingClientRect();
-    const ratio = Math.min(window.devicePixelRatio || 1, 2.5);
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
     width = rect.width;
     height = rect.height;
     canvas.width = Math.round(width * ratio);
@@ -120,19 +121,28 @@ export function createStage(options: StageOptions): StageHandle {
   function handleDown(event: PointerEvent): void {
     event.preventDefault();
     sfx.unlock();
-    pointerDown = true;
+    if (activePointer !== null) return;
+    activePointer = event.pointerId;
     canvas.setPointerCapture(event.pointerId);
     reveal.onPointerDown?.(toPoint(event));
   }
 
   function handleMove(event: PointerEvent): void {
-    reveal.onPointerMove?.(toPoint(event), pointerDown);
+    if (activePointer !== null && event.pointerId !== activePointer) return;
+    reveal.onPointerMove?.(toPoint(event), activePointer !== null);
   }
 
   function handleUp(event: PointerEvent): void {
-    if (!pointerDown) return;
-    pointerDown = false;
+    // iOS only allows audio to start from the end of a touch.
+    sfx.unlock();
+    if (event.pointerId !== activePointer) return;
+    activePointer = null;
     reveal.onPointerUp?.(toPoint(event));
+  }
+
+  /** Stops the browser scrolling, zooming or opening a menu while someone is playing. */
+  function suppress(event: Event): void {
+    event.preventDefault();
   }
 
   function emitConfetti(dt: number): void {
@@ -226,6 +236,9 @@ export function createStage(options: StageOptions): StageHandle {
   canvas.addEventListener('pointermove', handleMove);
   canvas.addEventListener('pointerup', handleUp);
   canvas.addEventListener('pointercancel', handleUp);
+  canvas.addEventListener('touchstart', suppress, { passive: false });
+  canvas.addEventListener('contextmenu', suppress);
+  document.addEventListener('gesturestart', suppress);
   window.addEventListener('resize', resize);
   frame = requestAnimationFrame(tick);
 
@@ -236,6 +249,9 @@ export function createStage(options: StageOptions): StageHandle {
       canvas.removeEventListener('pointermove', handleMove);
       canvas.removeEventListener('pointerup', handleUp);
       canvas.removeEventListener('pointercancel', handleUp);
+      canvas.removeEventListener('touchstart', suppress);
+      canvas.removeEventListener('contextmenu', suppress);
+      document.removeEventListener('gesturestart', suppress);
       window.removeEventListener('resize', resize);
     },
   };

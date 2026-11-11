@@ -8,7 +8,7 @@ Secret-gift draw with an interactive reveal for each person. Runs on Cloudflare 
 - `/admin` — password protected. Add people, pick each person's reveal, draw names, copy links,
   see who has opened their link and (behind a toggle) who is buying for whom.
 - `/r/<token>` — a person's private link. They have to open an object before the name is shown.
-- `/preview/<kind>` — try a reveal with sample data. Kinds: `egg`, `frost`, `present`, `cracker`,
+- `/preview/<kind>` — try a reveal with sample data. Kinds: `egg`, `jack`, `present`, `cracker`,
   `globe`.
 
 Adding or removing people clears the draw. Redrawing keeps the same links.

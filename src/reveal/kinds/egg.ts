@@ -11,7 +11,11 @@ import {
 } from '../draw';
 import type { Point, RevealFactory } from '../engine';
 
-const HITS_TO_BREAK = 7;
+const HITS_TO_BREAK = 20;
+const HITS_PER_DODGE = 4;
+/** Seconds without a tap before the newest crack seals over. */
+const SEAL_AFTER = 1.7;
+const SEAL_INTERVAL = 0.7;
 const COMPLETE_DELAY = 0.4;
 
 interface Crack {
@@ -25,6 +29,8 @@ interface Layout {
   cy: number;
   rx: number;
   ry: number;
+  /** Where the egg rests, used for the contact shadow while it hops. */
+  floorY: number;
 }
 
 const SPECKLES: readonly { x: number; y: number; r: number; spin: number }[] = [
@@ -113,12 +119,57 @@ export const createEgg: RevealFactory = (stage) => {
   let nextBlink = 1.5;
   let surprise = 0;
   let nextWiggle = 2.5;
+  const dodge = new Spring(0, 90, 10);
+  const hop = new Spring(0, 300, 13);
+  let dodgeSlot = 0;
+  let lastHitAt = 0;
+  let dragStart: Point | null = null;
 
   stage.setHint('Tap the egg');
 
   function layout(): Layout {
     const scale = clamp(Math.min(stage.width / 420, stage.height / 640), 0.55, 1.5);
-    return { cx: stage.width / 2, cy: stage.height * 0.52, rx: 118 * scale, ry: 152 * scale };
+    const rx = 118 * scale;
+    const ry = 152 * scale;
+    const restY = stage.height * 0.52;
+    return {
+      cx: stage.width / 2 + dodge.value,
+      cy: restY - Math.max(0, hop.value),
+      rx,
+      ry,
+      floorY: restY + ry * 1.02,
+    };
+  }
+
+  /** Hops sideways to one of three spots so the next taps have to find it again. */
+  function dodgeAway(l: Layout): void {
+    const reach = Math.max(0, Math.min(stage.width / 2 - l.rx - 14, l.rx * 0.9));
+    const slots = [-1, 0, 1].filter((slot) => slot !== dodgeSlot);
+    dodgeSlot = slots[Math.floor(Math.random() * slots.length)];
+    dodge.target = dodgeSlot * reach;
+    hop.velocity += 760;
+    stage.sfx.whoosh();
+  }
+
+  function sealNewestCrack(l: Layout): void {
+    hits -= 1;
+    cracks.pop();
+    lastHitAt = stage.time - (SEAL_AFTER - SEAL_INTERVAL);
+    stage.setProgress(hits / HITS_TO_BREAK);
+    stage.setHint('Cracks are sealing. Tap faster');
+    stage.sfx.tap(0.7);
+    stage.particles.burst({
+      x: l.cx,
+      y: l.cy,
+      count: 5,
+      colors: [PALETTE.gold, PALETTE.goldPale],
+      shapes: ['star'],
+      speed: [60, 200],
+      size: [6, 12],
+      life: [0.4, 0.8],
+      gravity: 0,
+      drag: 2,
+    });
   }
 
   function toLocal(point: Point, l: Layout): Point {
@@ -131,6 +182,8 @@ export const createEgg: RevealFactory = (stage) => {
     const distance = Math.hypot(local.x, local.y);
     if (distance > 1.15 || brokenAt !== null) return;
     const scaleIn = distance > 0.7 ? 0.7 / distance : 1;
+    dragStart = point;
+    lastHitAt = stage.time;
     hits += 1;
     cracks.push(makeCrack({ x: local.x * scaleIn, y: local.y * scaleIn }));
     squash.velocity += 2.4;
@@ -153,7 +206,8 @@ export const createEgg: RevealFactory = (stage) => {
       stage.sfx.crack(hits / HITS_TO_BREAK);
       stage.shake(4 + hits);
       stage.haptic(12);
-      stage.setHint(hits >= HITS_TO_BREAK - 2 ? 'Nearly there' : 'Keep tapping');
+      stage.setHint(hits >= HITS_TO_BREAK - 4 ? 'Nearly there' : 'Keep tapping');
+      if (hits % HITS_PER_DODGE === 0) dodgeAway(l);
       return;
     }
 
@@ -294,7 +348,7 @@ export const createEgg: RevealFactory = (stage) => {
 
   function drawWhole(ctx: CanvasRenderingContext2D, l: Layout): void {
     const bob = Math.sin(stage.time * 1.7) * 3;
-    softShadow(ctx, l.cx, l.cy + l.ry * 1.02, l.rx * 1.15, l.rx * 0.2);
+    softShadow(ctx, l.cx, l.floorY, l.rx * 1.15, l.rx * 0.2);
     ctx.save();
     ctx.translate(l.cx, l.cy + l.ry + bob);
     ctx.rotate(tilt.value * 0.12);
@@ -340,6 +394,11 @@ export const createEgg: RevealFactory = (stage) => {
     update(dt) {
       squash.update(dt);
       tilt.update(dt);
+      dodge.update(dt);
+      hop.update(dt);
+      if (hits > 0 && brokenAt === null && stage.time - lastHitAt > SEAL_AFTER) {
+        sealNewestCrack(layout());
+      }
       surprise = Math.max(0, surprise - dt * 1.6);
       for (const crack of cracks) crack.age += dt;
 
@@ -370,11 +429,18 @@ export const createEgg: RevealFactory = (stage) => {
       else drawBroken(ctx, l, stage.time - brokenAt);
     },
     onPointerDown: strike,
-    onPointerMove(point) {
+    onPointerMove(point, down) {
       const l = layout();
+      if (down && dragStart && brokenAt === null) {
+        tilt.target = clamp((point.x - dragStart.x) / l.rx, -1, 1) * 3.2;
+      }
       const local = toLocal(point, l);
       const length = Math.max(1, Math.hypot(local.x, local.y));
       look = { x: local.x / length, y: local.y / length };
+    },
+    onPointerUp() {
+      dragStart = null;
+      tilt.target = 0;
     },
   };
 };

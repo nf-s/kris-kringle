@@ -13,20 +13,86 @@ import {
 } from '../draw';
 import type { Point, RevealFactory } from '../engine';
 
-/** Seconds of full-intensity shaking needed to fill the globe. */
-const CHARGE_TIME = 3.2;
-const CHARGE_DECAY = 0.05;
+/** Seconds of full-intensity, back-and-forth shaking needed to fill the globe. */
+const CHARGE_TIME = 8.5;
+/** Charge lost per second once shaking stops. */
+const CHARGE_DECAY = 0.12;
+const DECAY_GRACE = 0.4;
+/** Pointer speed, in design pixels per second, below which shaking does not count. */
+const SHAKE_THRESHOLD = 260;
+/** Charge only counts this long after the pointer last reversed direction. */
+const REVERSAL_WINDOW = 0.35;
+const REVERSAL_SEGMENT = 8;
+const STAGES = 3;
+const STAGE_FLOURISHES: readonly (readonly number[])[] = [
+  [2, 4, 7],
+  [4, 7, 9, 11],
+];
+const FLOURISH_GAP = 0.085;
+const TAP_TIME = 0.3;
+const TAP_SLOP = 12;
 const COMPLETE_DELAY = 0.4;
-const FLAKE_COUNT = 150;
+const FLAKE_BASE = 150;
+const FLAKE_EXTRA = 110;
 const FLAKE_WALL = 0.9;
 const FLAKE_GRAVITY = 0.4;
+const PENGUIN_X = -0.08;
+const PENGUIN_GRAVITY = 7;
+const GIFT_MIN = -0.72;
+const GIFT_MAX = 0.3;
 const INK = '#2b2233';
+
+/** Hairline cracks in globe space, each with the charge at which it starts to grow. */
+const CRACKS: readonly { start: number; points: readonly Point[] }[] = [
+  {
+    start: 0.66,
+    points: [
+      { x: 0.66, y: -0.66 },
+      { x: 0.54, y: -0.55 },
+      { x: 0.57, y: -0.42 },
+      { x: 0.45, y: -0.33 },
+      { x: 0.48, y: -0.2 },
+    ],
+  },
+  {
+    start: 0.76,
+    points: [
+      { x: -0.9, y: 0.22 },
+      { x: -0.74, y: 0.17 },
+      { x: -0.71, y: 0.04 },
+      { x: -0.57, y: -0.02 },
+    ],
+  },
+  {
+    start: 0.86,
+    points: [
+      { x: 0.2, y: -0.97 },
+      { x: 0.15, y: -0.84 },
+      { x: 0.25, y: -0.74 },
+      { x: 0.2, y: -0.62 },
+    ],
+  },
+];
+
+const FLASH_SPOTS: readonly Point[] = [
+  { x: -0.5, y: -0.45 },
+  { x: 0.3, y: -0.6 },
+  { x: 0.62, y: -0.1 },
+  { x: -0.7, y: 0.05 },
+  { x: 0.05, y: -0.25 },
+  { x: -0.28, y: 0.3 },
+  { x: 0.45, y: 0.32 },
+  { x: -0.1, y: -0.78 },
+];
 
 interface Layout {
   cx: number;
   cy: number;
   radius: number;
   unit: number;
+  reachX: number;
+  reachUp: number;
+  reachDown: number;
 }
 
 /** Snowflake in globe space: the glass is the unit circle around the origin. */
@@ -38,6 +104,25 @@ interface Flake {
   size: number;
   drag: number;
   phase: number;
+}
+
+interface Ripple {
+  x: number;
+  y: number;
+  age: number;
+}
+
+interface Pose {
+  lean: number;
+  flap: number;
+  wide: number;
+  /** 0 calm, 0.5 seeing stars, 1 spiral eyes and a slipping hat. */
+  dizzy: number;
+  /** -1 looking left to 1 looking right. */
+  look: number;
+  wave: number;
+  hop: number;
+  time: number;
 }
 
 function groundY(x: number): number {
@@ -81,8 +166,55 @@ function ellipse(
   ctx.fill();
 }
 
+function drawEye(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  size: number,
+  pose: Pose,
+): void {
+  if (pose.dizzy > 0.6) {
+    const spin = pose.time * 7;
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 0.011;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let k = 0; k <= 16; k++) {
+      const angle = spin + k * 0.75;
+      const r = (size * 1.35 * k) / 16;
+      ctx.lineTo(x + Math.cos(angle) * r, y + Math.sin(angle) * r);
+    }
+    ctx.stroke();
+    return;
+  }
+  const shift = pose.look * 0.014;
+  ctx.fillStyle = INK;
+  ellipse(ctx, x + shift, y, size, size);
+  ctx.fillStyle = PALETTE.white;
+  ellipse(ctx, x + shift - size * 0.3, y - size * 0.35, size * 0.35, size * 0.35);
+}
+
+function drawHat(ctx: CanvasRenderingContext2D, pose: Pose): void {
+  const slip = pose.dizzy * (0.32 + Math.sin(pose.time * 4.5) * 0.08);
+  ctx.save();
+  ctx.translate(0.12 * slip, -0.72);
+  ctx.rotate(slip);
+  ctx.translate(0, 0.72);
+  ctx.fillStyle = PALETTE.red;
+  ctx.beginPath();
+  ctx.ellipse(0, -0.73, 0.165, 0.14, 0, Math.PI, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = PALETTE.white;
+  ctx.beginPath();
+  ctx.roundRect(-0.185, -0.76, 0.37, 0.065, 0.032);
+  ctx.fill();
+  ellipse(ctx, 0, -0.885, 0.05, 0.05);
+  ctx.restore();
+}
+
 /** Penguin in a hat and scarf, standing with its feet at the origin. */
-function drawPenguin(ctx: CanvasRenderingContext2D, flap: number, wide: number): void {
+function drawPenguin(ctx: CanvasRenderingContext2D, pose: Pose): void {
+  const { flap, wide } = pose;
   ctx.fillStyle = PALETTE.gold;
   ellipse(ctx, -0.09, -0.01, 0.08, 0.035);
   ellipse(ctx, 0.09, -0.01, 0.08, 0.035);
@@ -93,9 +225,10 @@ function drawPenguin(ctx: CanvasRenderingContext2D, flap: number, wide: number):
   coat.addColorStop(1, '#131c2b');
   ctx.fillStyle = coat;
   for (const side of [-1, 1]) {
+    const wave = side > 0 ? pose.wave * (1.9 + Math.sin(pose.time * 16) * 0.35) : 0;
     ctx.save();
     ctx.translate(side * 0.21, -0.4);
-    ctx.rotate(-side * (0.3 + flap));
+    ctx.rotate(-side * (0.3 + flap + wave));
     ellipse(ctx, 0, 0.13, 0.055, 0.16);
     ctx.restore();
   }
@@ -116,16 +249,13 @@ function drawPenguin(ctx: CanvasRenderingContext2D, flap: number, wide: number):
   ellipse(ctx, -0.14, -0.53, 0.04, 0.028);
   ellipse(ctx, 0.14, -0.53, 0.04, 0.028);
   const eye = 0.028 + 0.012 * wide;
-  for (const side of [-1, 1]) {
-    ctx.fillStyle = INK;
-    ellipse(ctx, side * 0.075, -0.6, eye, eye);
-    ctx.fillStyle = PALETTE.white;
-    ellipse(ctx, side * 0.075 - eye * 0.3, -0.6 - eye * 0.35, eye * 0.35, eye * 0.35);
-  }
+  drawEye(ctx, -0.075, -0.6, eye, pose);
+  drawEye(ctx, 0.075, -0.6, eye, pose);
+  const beak = pose.look * 0.012;
   ctx.fillStyle = PALETTE.gold;
-  ellipse(ctx, 0, -0.535, 0.045, 0.03 + 0.012 * wide);
+  ellipse(ctx, beak, -0.535, 0.045, 0.03 + 0.012 * wide);
   ctx.fillStyle = PALETTE.goldDeep;
-  ctx.fillRect(-0.04, -0.538, 0.08, 0.008);
+  ctx.fillRect(beak - 0.04, -0.538, 0.08, 0.008);
 
   ctx.fillStyle = PALETTE.red;
   ctx.save();
@@ -147,18 +277,47 @@ function drawPenguin(ctx: CanvasRenderingContext2D, flap: number, wide: number):
   ctx.fillStyle = PALETTE.goldPale;
   for (const x of [-0.13, -0.03, 0.07]) ctx.fillRect(x, -0.475, 0.025, 0.095);
 
-  ctx.fillStyle = PALETTE.red;
-  ctx.beginPath();
-  ctx.ellipse(0, -0.73, 0.165, 0.14, 0, Math.PI, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = PALETTE.white;
-  ctx.beginPath();
-  ctx.roundRect(-0.185, -0.76, 0.37, 0.065, 0.032);
-  ctx.fill();
-  ellipse(ctx, 0, -0.885, 0.05, 0.05);
+  drawHat(ctx, pose);
+
+  const stars = clamp((pose.dizzy - 0.15) / 0.3, 0, 1);
+  if (stars > 0) {
+    for (let i = 0; i < 3; i++) {
+      const angle = pose.time * 4 + (i * Math.PI * 2) / 3;
+      const depth = Math.sin(angle);
+      sparkle(
+        ctx,
+        Math.cos(angle) * 0.24,
+        -0.97 + depth * 0.06,
+        0.05 + depth * 0.012,
+        PALETTE.gold,
+        stars * (0.75 + depth * 0.25),
+        pose.time * 3,
+      );
+    }
+  }
 }
 
-function drawScene(ctx: CanvasRenderingContext2D, lean: number, flap: number, wide: number): void {
+function drawGift(ctx: CanvasRenderingContext2D, x: number, lean: number): void {
+  ctx.save();
+  ctx.translate(x, 0.63);
+  ctx.rotate(lean);
+  ctx.fillStyle = PALETTE.red;
+  ctx.fillRect(-0.085, -0.14, 0.17, 0.14);
+  ctx.fillStyle = PALETTE.redDeep;
+  ctx.fillRect(-0.085, -0.14, 0.17, 0.03);
+  ctx.fillStyle = PALETTE.gold;
+  ctx.fillRect(-0.02, -0.14, 0.04, 0.14);
+  ellipse(ctx, -0.03, -0.16, 0.035, 0.025);
+  ellipse(ctx, 0.03, -0.16, 0.035, 0.025);
+  ctx.restore();
+}
+
+function drawScene(
+  ctx: CanvasRenderingContext2D,
+  pose: Pose,
+  giftX: number,
+  giftLean: number,
+): void {
   const snow = ctx.createLinearGradient(0, 0.5, 0, 1);
   snow.addColorStop(0, PALETTE.white);
   snow.addColorStop(1, PALETTE.iceDeep);
@@ -173,9 +332,10 @@ function drawScene(ctx: CanvasRenderingContext2D, lean: number, flap: number, wi
   ctx.fill();
 
   ctx.fillStyle = 'rgba(71, 85, 105, 0.16)';
-  ellipse(ctx, -0.08, 0.63, 0.26, 0.04);
+  const shadowScale = 1 / (1 - pose.hop * 4);
+  ellipse(ctx, PENGUIN_X, 0.63, 0.26 * shadowScale, 0.04 * shadowScale);
   ellipse(ctx, 0.5, 0.65, 0.18, 0.03);
-  ellipse(ctx, -0.56, 0.63, 0.12, 0.025);
+  ellipse(ctx, giftX, 0.63, 0.12, 0.025);
 
   // Snowy tree.
   ctx.fillStyle = PALETTE.slate;
@@ -203,20 +363,12 @@ function drawScene(ctx: CanvasRenderingContext2D, lean: number, flap: number, wi
   }
   sparkle(ctx, 0.5, 0.09, 0.07, PALETTE.gold);
 
-  // Gift.
-  ctx.fillStyle = PALETTE.red;
-  ctx.fillRect(-0.645, 0.49, 0.17, 0.14);
-  ctx.fillStyle = PALETTE.redDeep;
-  ctx.fillRect(-0.645, 0.49, 0.17, 0.03);
-  ctx.fillStyle = PALETTE.gold;
-  ctx.fillRect(-0.58, 0.49, 0.04, 0.14);
-  ellipse(ctx, -0.59, 0.47, 0.035, 0.025);
-  ellipse(ctx, -0.53, 0.47, 0.035, 0.025);
+  drawGift(ctx, giftX, giftLean);
 
   ctx.save();
-  ctx.translate(-0.08, 0.63);
-  ctx.rotate(lean);
-  drawPenguin(ctx, flap, wide);
+  ctx.translate(PENGUIN_X, 0.63 + pose.hop);
+  ctx.rotate(pose.lean);
+  drawPenguin(ctx, pose);
   ctx.restore();
 }
 
@@ -306,38 +458,163 @@ function drawGlassShine(ctx: CanvasRenderingContext2D): void {
   ctx.stroke();
 }
 
+/** Draws the first `growth` (0 to 1) of a crack's polyline as a bright line with a dark edge. */
+function drawCrack(ctx: CanvasRenderingContext2D, points: readonly Point[], growth: number): void {
+  if (growth <= 0 || points.length < 2) return;
+  const reach = growth * (points.length - 1);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const layer of [
+    { style: 'rgba(43, 34, 51, 0.35)', width: 0.022, shift: 0.008 },
+    { style: 'rgba(255, 255, 255, 0.95)', width: 0.012, shift: 0 },
+  ]) {
+    ctx.beginPath();
+    ctx.moveTo(points[0].x + layer.shift, points[0].y + layer.shift);
+    for (let i = 1; i < points.length; i++) {
+      const t = clamp(reach - (i - 1), 0, 1);
+      if (t <= 0) break;
+      const from = points[i - 1];
+      const to = points[i];
+      ctx.lineTo(lerp(from.x, to.x, t) + layer.shift, lerp(from.y, to.y, t) + layer.shift);
+    }
+    ctx.strokeStyle = layer.style;
+    ctx.lineWidth = layer.width;
+    ctx.stroke();
+  }
+}
+
 export const createGlobe: RevealFactory = (stage) => {
   const offsetX = new Spring(0, 320, 20);
   const offsetY = new Spring(0, 320, 20);
   const tilt = new Spring(0, 140, 10);
-  const flakes: Flake[] = Array.from({ length: FLAKE_COUNT }, makeFlake);
+  const look = new Spring(0, 70, 9);
+  const flakes: Flake[] = Array.from({ length: FLAKE_BASE + FLAKE_EXTRA }, makeFlake);
+  const ripples: Ripple[] = Array.from({ length: 4 }, () => ({ x: 0, y: 0, age: 9 }));
+  const pose: Pose = { lean: 0, flap: 0, wide: 0, dizzy: 0, look: 0, wave: 0, hop: 0, time: 0 };
   let grab: Point | null = null;
   let lastPointer: Point = { x: 0, y: 0 };
+  let downPoint: Point = { x: 0, y: 0 };
+  let downAt = 0;
+  let downTravel = 0;
   let travel = 0;
   let speed = 0;
   let intensity = 0;
   let charge = 0;
+  let banked = 0;
   let shown = 0;
-  let milestone = 0;
+  let peak = 0;
+  let lastChargeAt = -10;
+  let segmentX = 0;
+  let segmentY = 0;
+  let directionX = 0;
+  let directionY = 0;
+  let olderX = 0;
+  let olderY = 0;
+  let lastReversal = -10;
+  let weakFor = 0;
   let jingle = 0;
   let hapticWait = 0;
   let previousVx = 0;
   let previousVy = 0;
+  let blizzard = 0;
+  let flash = 0;
+  let flourish: readonly number[] = [];
+  let flourishIndex = 0;
+  let flourishAt = 0;
+  let cracksHeard = 0;
+  let lookUntil = 0;
+  let waveLeft = 0;
+  let hopVelocity = 0;
+  let giftX = -0.56;
+  let giftVelocity = 0;
   let hint = 'Shake the snow globe';
   let nextWiggle = 2.5;
   let poppedAt: number | null = null;
+  let completeSent = false;
 
   stage.setHint(hint);
 
   function layout(): Layout {
     const unit = clamp(Math.min(stage.width / 420, stage.height / 640), 0.55, 1.5);
-    return { cx: stage.width / 2, cy: stage.height * 0.52 - 26 * unit, radius: 118 * unit, unit };
+    const cx = stage.width / 2;
+    const cy = stage.height * 0.52 - 26 * unit;
+    const radius = 118 * unit;
+    const reach = Math.min(stage.width, stage.height) * 0.3;
+    return {
+      cx,
+      cy,
+      radius,
+      unit,
+      reachX: clamp(cx - radius * 0.92 - 12, 16, reach),
+      reachUp: clamp(cy - radius * 0.9 - 12, 16, reach),
+      reachDown: clamp(stage.height - 12 - (cy + radius * 1.4), 16, reach),
+    };
   }
 
   function showHint(text: string): void {
     if (text === hint) return;
     hint = text;
     stage.setHint(text);
+  }
+
+  function bob(l: Layout): number {
+    return poppedAt === null ? Math.sin(stage.time * 1.6) * 2.5 * l.unit : 0;
+  }
+
+  /** Converts a stage point into globe space, where the glass is the unit circle. */
+  function toLocal(point: Point, l: Layout): Point {
+    const dx = point.x - (l.cx + offsetX.value);
+    const dy = point.y - (l.cy + offsetY.value + bob(l));
+    const cos = Math.cos(tilt.value);
+    const sin = Math.sin(tilt.value);
+    return { x: (dx * cos + dy * sin) / l.radius, y: (-dx * sin + dy * cos) / l.radius };
+  }
+
+  function penguinJump(height: number): void {
+    if (pose.hop < 0) return;
+    hopVelocity = -Math.sqrt(2 * PENGUIN_GRAVITY * height);
+  }
+
+  function tapGlass(local: Point): void {
+    stage.sfx.tap(2.6);
+    stage.haptic(6);
+    let oldest = ripples[0];
+    for (const ripple of ripples) if (ripple.age > oldest.age) oldest = ripple;
+    oldest.x = local.x;
+    oldest.y = local.y;
+    oldest.age = 0;
+    look.target = clamp((local.x - PENGUIN_X) * 2.2, -1, 1);
+    lookUntil = stage.time + 1.4;
+    waveLeft = 0.9;
+    penguinJump(0.09);
+  }
+
+  function tapBase(l: Layout): void {
+    stage.sfx.tap(0.85);
+    stage.haptic(10);
+    offsetY.velocity -= 900 * l.unit;
+    penguinJump(0.05);
+  }
+
+  function celebrateStage(reached: number, l: Layout): void {
+    flourish = STAGE_FLOURISHES[reached - 1];
+    flourishIndex = 0;
+    flourishAt = stage.time;
+    flash = 1;
+    stage.haptic([18, 30, 18]);
+    stage.shake(4 + reached * 2);
+    stage.particles.burst({
+      x: l.cx + offsetX.value,
+      y: l.cy + offsetY.value,
+      count: 14 + reached * 6,
+      colors: [PALETTE.gold, PALETTE.goldPale, PALETTE.white],
+      shapes: ['star'],
+      speed: [80, 320],
+      size: [6, 13],
+      life: [0.5, 1],
+      gravity: 120,
+      drag: 2.2,
+    });
   }
 
   function pop(l: Layout): void {
@@ -390,14 +667,21 @@ export const createGlobe: RevealFactory = (stage) => {
     });
   }
 
+  function activeFlakes(): number {
+    return FLAKE_BASE + Math.round(blizzard * FLAKE_EXTRA);
+  }
+
   function updateFlakes(dt: number, l: Layout): void {
     const pushX = clamp((offsetX.velocity - previousVx) / dt / l.radius, -45, 45);
     const pushY = clamp((offsetY.velocity - previousVy) / dt / l.radius, -45, 45);
     previousVx = offsetX.velocity;
     previousVy = offsetY.velocity;
-    const stir = Math.hypot(pushX, pushY) * 0.6 + intensity * 3;
-    const swirl = clamp(tilt.value * 9, -3, 3);
-    for (const flake of flakes) {
+    const stir = (Math.hypot(pushX, pushY) * 0.6 + intensity * 3) * (1 + blizzard * 2);
+    const swirl = clamp(tilt.value * 9, -3, 3) + blizzard * 1.6;
+    const slide = Math.sin(tilt.value) * 2.4;
+    const count = activeFlakes();
+    for (let i = 0; i < count; i++) {
+      const flake = flakes[i];
       flake.vx += (-pushX * 0.8 - flake.y * swirl + rand(-1, 1) * stir) * dt;
       flake.vy += (-pushY * 0.8 + flake.x * swirl + rand(-1, 1) * stir + FLAKE_GRAVITY) * dt;
       flake.vx += Math.sin(stage.time * 2 + flake.phase) * 0.12 * dt;
@@ -423,24 +707,95 @@ export const createGlobe: RevealFactory = (stage) => {
       if (flake.y > ground) {
         flake.y = ground;
         flake.vy = Math.min(flake.vy, 0);
-        flake.vx *= Math.exp(-8 * dt);
+        flake.vx += slide * dt;
+        flake.vx *= Math.exp(-5 * dt);
       }
     }
+  }
+
+  function updateGift(dt: number): void {
+    giftVelocity += Math.sin(tilt.value) * 3.2 * dt;
+    giftVelocity *= Math.exp(-2.4 * dt);
+    giftX += giftVelocity * dt;
+    if (giftX < GIFT_MIN || giftX > GIFT_MAX) {
+      giftX = clamp(giftX, GIFT_MIN, GIFT_MAX);
+      if (Math.abs(giftVelocity) > 0.25) stage.sfx.tap(1.9);
+      giftVelocity *= -0.35;
+    }
+  }
+
+  function updatePenguin(dt: number): void {
+    if (stage.time > lookUntil) look.target = 0;
+    look.update(dt);
+    waveLeft = Math.max(0, waveLeft - dt);
+    if (pose.hop < 0 || hopVelocity < 0) {
+      hopVelocity += PENGUIN_GRAVITY * dt;
+      pose.hop += hopVelocity * dt;
+      if (pose.hop >= 0) {
+        pose.hop = 0;
+        hopVelocity = 0;
+      }
+    }
+    pose.dizzy = lerp(pose.dizzy, banked / (STAGES - 1), 1 - Math.exp(-dt * 2.5));
+    blizzard = lerp(
+      blizzard,
+      Math.max(banked / (STAGES - 1), intensity * 0.6),
+      1 - Math.exp(-dt * 2),
+    );
+  }
+
+  function updateFlourish(): void {
+    while (
+      flourishIndex < flourish.length &&
+      stage.time >= flourishAt + flourishIndex * FLOURISH_GAP
+    ) {
+      stage.sfx.chime(flourish[flourishIndex]);
+      flourishIndex += 1;
+    }
+  }
+
+  function trackDirection(point: Point): void {
+    segmentX += point.x - lastPointer.x;
+    segmentY += point.y - lastPointer.y;
+    const length = Math.hypot(segmentX, segmentY);
+    if (length < REVERSAL_SEGMENT) return;
+    const nx = segmentX / length;
+    const ny = segmentY / length;
+    if (nx * directionX + ny * directionY < -0.2 || nx * olderX + ny * olderY < -0.2) {
+      lastReversal = stage.time;
+    }
+    olderX = directionX;
+    olderY = directionY;
+    directionX = nx;
+    directionY = ny;
+    segmentX = 0;
+    segmentY = 0;
   }
 
   function updateShake(dt: number, l: Layout): void {
     speed = lerp(speed, travel / dt / l.unit, 1 - Math.exp(-dt * 10));
     travel = 0;
-    intensity = grab === null ? 0 : clamp((speed - 200) / 900, 0, 1);
-    if (intensity > 0.05) charge += (intensity * dt) / CHARGE_TIME;
-    else charge -= CHARGE_DECAY * dt;
-    charge = clamp(charge, 0, 1);
+    intensity = grab === null ? 0 : clamp((speed - SHAKE_THRESHOLD) / 900, 0, 1);
+    const reversing = stage.time - lastReversal < REVERSAL_WINDOW;
+    const shaking = intensity > 0.05 && reversing;
+    if (shaking) {
+      charge += (intensity * dt) / CHARGE_TIME;
+      lastChargeAt = stage.time;
+    } else if (stage.time - lastChargeAt > DECAY_GRACE) {
+      charge -= CHARGE_DECAY * dt;
+    }
+    charge = clamp(charge, banked / STAGES, 1);
+    peak = Math.max(peak, charge);
     if (Math.abs(charge - shown) > 0.004) {
       shown = charge;
       stage.setProgress(charge);
     }
-    if (charge > 0.7) showHint('Nearly there');
-    else if (charge > 0.03) showHint('Keep shaking');
+
+    weakFor = grab !== null && speed > 60 && !shaking ? weakFor + dt : 0;
+    if (weakFor > 0.4) showHint(intensity > 0.05 ? 'Shake back and forth' : 'Shake harder');
+    else if (charge > 0.75) showHint('Nearly there');
+    else if (charge > 0 && (shaking || grab === null)) showHint('Keep shaking');
+    else if (charge === 0 && grab === null) showHint('Shake the snow globe');
 
     jingle += intensity * dt;
     if (jingle > 0.16) {
@@ -448,16 +803,34 @@ export const createGlobe: RevealFactory = (stage) => {
       stage.sfx.tap(rand(1.5, 2.4));
     }
     hapticWait -= dt;
-    if (intensity > 0.7 && hapticWait <= 0) {
+    if (shaking && intensity > 0.6 && hapticWait <= 0) {
       hapticWait = 0.16;
       stage.haptic(12);
     }
-    const step = Math.floor(charge * 4);
-    if (step > milestone && charge < 1) {
-      milestone = step;
-      stage.sfx.chime(step - 1);
+
+    while (cracksHeard < CRACKS.length && peak >= CRACKS[cracksHeard].start) {
+      cracksHeard += 1;
+      stage.sfx.crack(0.25 + cracksHeard * 0.12);
     }
+    const reached = Math.min(STAGES - 1, Math.floor(charge * STAGES));
     if (charge >= 1) pop(l);
+    else if (reached > banked) {
+      banked = reached;
+      celebrateStage(reached, l);
+    }
+  }
+
+  function drawRipples(ctx: CanvasRenderingContext2D): void {
+    for (const ripple of ripples) {
+      if (ripple.age > 0.6) continue;
+      const t = ripple.age / 0.6;
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.85 * (1 - t)})`;
+      ctx.lineWidth = 0.02 * (1 - t) + 0.004;
+      ctx.beginPath();
+      ctx.arc(ripple.x, ripple.y, 0.04 + t * 0.26, 0, Math.PI * 2);
+      ctx.stroke();
+      sparkle(ctx, ripple.x, ripple.y, 0.09 * (1 - t), PALETTE.white, 1 - t, t * 2);
+    }
   }
 
   function drawSphere(ctx: CanvasRenderingContext2D): void {
@@ -472,14 +845,65 @@ export const createGlobe: RevealFactory = (stage) => {
     ctx.beginPath();
     ctx.arc(0, 0, 0.97, 0, Math.PI * 2);
     ctx.clip();
-    const lean = -tilt.value * 0.5 + Math.sin(stage.time * 22) * 0.05 * intensity;
-    const flap = intensity * 0.9 + Math.sin(stage.time * 2.2) * 0.06;
-    drawScene(ctx, lean, flap, intensity);
+    pose.time = stage.time;
+    pose.look = look.value;
+    pose.wide = Math.max(intensity, pose.dizzy * 0.6);
+    pose.flap = intensity * 0.9 + Math.sin(stage.time * 2.2) * 0.06;
+    pose.wave = clamp(waveLeft / 0.25, 0, 1);
+    pose.lean =
+      -tilt.value * 0.5 +
+      Math.sin(stage.time * 22) * 0.05 * intensity +
+      Math.sin(stage.time * 4.5) * 0.16 * pose.dizzy +
+      look.value * 0.08;
+    drawScene(ctx, pose, giftX, -tilt.value * 0.4 + giftVelocity * 0.3);
     ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
-    for (const flake of flakes) ellipse(ctx, flake.x, flake.y, flake.size, flake.size);
+    const count = activeFlakes();
+    for (let i = 0; i < count; i++) {
+      const flake = flakes[i];
+      ellipse(ctx, flake.x, flake.y, flake.size, flake.size);
+    }
+    if (blizzard > 0.05) {
+      ctx.fillStyle = `rgba(240, 246, 252, ${0.22 * blizzard})`;
+      ellipse(ctx, 0, 0, 1, 1);
+    }
+    if (flash > 0) {
+      for (let i = 0; i < FLASH_SPOTS.length; i++) {
+        const spot = FLASH_SPOTS[i];
+        const size = (0.06 + (i % 3) * 0.03) * easeOutCubic(flash * 1.6) * flash;
+        sparkle(
+          ctx,
+          spot.x,
+          spot.y,
+          size,
+          i % 2 === 0 ? PALETTE.goldPale : PALETTE.white,
+          1,
+          stage.time * 2,
+        );
+      }
+    }
+    drawRipples(ctx);
     ctx.restore();
-    glow(ctx, 0, 0.1, 1, GOLD_GLOW_RGB, 0.5 * charge);
+    glow(ctx, 0, 0.1, 1, GOLD_GLOW_RGB, 0.5 * charge + 0.4 * flash);
     drawGlassShine(ctx);
+    for (const crack of CRACKS) {
+      if (peak < crack.start) continue;
+      drawCrack(ctx, crack.points, 0.25 + (0.75 * (peak - crack.start)) / (1 - crack.start));
+    }
+  }
+
+  function release(point: Point): void {
+    if (grab === null) return;
+    const quick = stage.time - downAt < TAP_TIME;
+    const still =
+      Math.max(downTravel, Math.hypot(point.x - downPoint.x, point.y - downPoint.y)) < TAP_SLOP;
+    grab = null;
+    offsetX.target = 0;
+    offsetY.target = 0;
+    if (!quick || !still || poppedAt !== null) return;
+    const l = layout();
+    const local = toLocal(point, l);
+    if (Math.hypot(local.x, local.y) <= 1) tapGlass(local);
+    else if (local.y > 0.7 && local.y < 1.5 && Math.abs(local.x) < 1) tapBase(l);
   }
 
   return {
@@ -488,10 +912,20 @@ export const createGlobe: RevealFactory = (stage) => {
       const l = layout();
       offsetX.update(dt);
       offsetY.update(dt);
-      tilt.target = clamp((offsetX.velocity / l.unit) * 0.0007, -0.4, 0.4);
+      tilt.target = clamp(
+        (offsetX.velocity / l.unit) * 0.0007 + (offsetX.value / l.radius) * 0.3,
+        -0.45,
+        0.45,
+      );
       tilt.update(dt);
+      flash = Math.max(0, flash - dt * 1.5);
+      for (const ripple of ripples) ripple.age += dt;
+      updateFlourish();
       if (poppedAt !== null) {
-        if (stage.time - poppedAt > COMPLETE_DELAY) stage.complete({ x: l.cx, y: l.cy });
+        if (!completeSent && stage.time - poppedAt > COMPLETE_DELAY) {
+          completeSent = true;
+          stage.complete({ x: l.cx, y: l.cy });
+        }
         return;
       }
       if (charge === 0 && grab === null) {
@@ -501,6 +935,8 @@ export const createGlobe: RevealFactory = (stage) => {
           nextWiggle = rand(2.2, 3.6);
         }
       }
+      updatePenguin(dt);
+      updateGift(dt);
       updateFlakes(dt, l);
       updateShake(dt, l);
     },
@@ -522,11 +958,10 @@ export const createGlobe: RevealFactory = (stage) => {
         l.radius * 0.17,
         0.28 * fade * (1 - lift * 0.6),
       );
-      const bob = poppedAt === null ? Math.sin(stage.time * 1.6) * 2.5 * l.unit : 0;
       const drop = easeInCubic((elapsed - 0.2) / 0.6) * l.radius * 1.4;
       ctx.save();
       ctx.globalAlpha = fade;
-      ctx.translate(l.cx + offsetX.value, l.cy + offsetY.value + bob + drop);
+      ctx.translate(l.cx + offsetX.value, l.cy + offsetY.value + bob(l) + drop);
       ctx.rotate(tilt.value);
       ctx.scale(l.radius, l.radius);
       glow(ctx, 0, 0, 1.3 + 0.5 * charge, GOLD_GLOW_RGB, 0.55 * charge);
@@ -551,24 +986,27 @@ export const createGlobe: RevealFactory = (stage) => {
       if (Math.hypot(point.x - x, point.y - y) > l.radius * 1.7) return;
       grab = { x: point.x - offsetX.value, y: point.y - offsetY.value };
       lastPointer = point;
-      stage.sfx.tap(1.3);
+      downPoint = point;
+      downAt = stage.time;
+      downTravel = 0;
+      segmentX = 0;
+      segmentY = 0;
+      directionX = 0;
+      directionY = 0;
+      olderX = 0;
+      olderY = 0;
       stage.haptic(8);
     },
     onPointerMove(point, down) {
       if (!down || grab === null) return;
       travel += Math.hypot(point.x - lastPointer.x, point.y - lastPointer.y);
+      downTravel = Math.max(downTravel, Math.hypot(point.x - downPoint.x, point.y - downPoint.y));
+      trackDirection(point);
       lastPointer = point;
-      const reach = Math.min(stage.width, stage.height) * 0.3;
-      const dx = point.x - grab.x;
-      const dy = point.y - grab.y;
-      const scale = Math.min(1, reach / Math.max(1, Math.hypot(dx, dy)));
-      offsetX.target = dx * scale;
-      offsetY.target = dy * scale;
+      const l = layout();
+      offsetX.target = clamp(point.x - grab.x, -l.reachX, l.reachX);
+      offsetY.target = clamp(point.y - grab.y, -l.reachUp, l.reachDown);
     },
-    onPointerUp() {
-      grab = null;
-      offsetX.target = 0;
-      offsetY.target = 0;
-    },
+    onPointerUp: release,
   };
 };
