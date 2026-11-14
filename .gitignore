@@ -4,3 +4,4 @@ dist
 .dev.vars
 .admin-password.*
 .DS_Store
+/character-prototype/
