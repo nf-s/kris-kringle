@@ -1,4 +1,4 @@
-import { createCast, type CastArea } from './cast';
+import { createCast } from './cast';
 import { CONFETTI_COLORS, clamp, rand } from './draw';
 import type { Point, Reveal, RevealFactory, Stage } from './engine';
 import type { MotionSensor } from './motion';
@@ -50,7 +50,7 @@ export function createStage(options: StageOptions): StageHandle {
   const castContext = castCanvas?.getContext('2d');
   if (!ctx || castContext === null) throw new Error('Canvas 2D is not available');
   const cast = options.cast ? createCast(options.cast.images) : null;
-  let castArea: CastArea = { width: 0, height: 0, top: 0, bottom: 0 };
+  let castBand = { top: 0, bottom: 0 };
 
   const particles = createParticles();
   let width = 0;
@@ -126,7 +126,7 @@ export function createStage(options: StageOptions): StageHandle {
       context.canvas.height = Math.round(height * ratio);
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
     }
-    if (options.cast) castArea = { width, height, ...options.cast.band() };
+    if (options.cast) castBand = options.cast.band();
   }
   resize();
 
@@ -257,7 +257,7 @@ export function createStage(options: StageOptions): StageHandle {
       castContext.clearRect(0, 0, width, height);
       castContext.save();
       castContext.translate(shakeX * CAST_SHAKE, shakeY * CAST_SHAKE);
-      cast.draw(castContext, castArea, time);
+      cast.draw(castContext, { width, height, ...castBand, object: reveal.footprint() }, time);
       castContext.restore();
     }
 

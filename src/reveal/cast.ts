@@ -6,13 +6,16 @@ import {
 } from '../../shared/schema';
 import { SPRITE_HEIGHT, SPRITE_WIDTH, drawFigure, panelOrigin } from '../characters/sprite';
 import { clamp, easeOutBack, lerp } from './draw';
+import type { Shape } from './engine';
 
-/** The stage, and the band of it the cast may stand in, in CSS pixels. */
+/** The stage, the band of it the cast may stand in, and the object in the middle, in CSS pixels. */
 export interface CastArea {
   width: number;
   height: number;
   top: number;
   bottom: number;
+  /** The object the cast stands behind. No face is placed where these shapes would cover it. */
+  object: readonly Shape[];
 }
 
 /** Where one figure stands. `height` is the height of its whole sprite panel on screen. */
@@ -36,20 +39,28 @@ export interface Cast {
 const FIGURE_WIDTH = 0.5;
 /** How far below the middle of the panel the figure's bottom edge sits, as a share of height. */
 const BASELINE_DROP = CHARACTER_SPRITE.baseline / CHARACTER_SPRITE.panelHeight - 0.5;
+/**
+ * The face, as shares of the panel height: how far its top and its chin sit above the figure's
+ * bottom edge, and half its width.
+ */
+const FACE = {
+  top:
+    (CHARACTER_SPRITE.baseline - CHARACTER_SPRITE.panelHeight * 0.05) /
+    CHARACTER_SPRITE.panelHeight,
+  chin: (CHARACTER_SPRITE.baseline - CHARACTER_SPRITE.neckY) / CHARACTER_SPRITE.panelHeight,
+  halfWidth: 0.17,
+};
 const MAX_HEIGHT = 300;
 const MIN_HEIGHT = 56;
-/** Share of its own width each figure needs along the ring before they are made smaller. */
-const CROWDING = 0.92;
+/**
+ * Share of its own width each figure needs along the ring before they are made smaller. Less
+ * than this and one figure's shoulder starts to cover the next one's face.
+ */
+const CROWDING = 0.84;
 const EDGE_GAP = 4;
 const RING_STEPS = 360;
-/**
- * Half the width of the object and the distance from its middle to its bottom edge, before the
- * scale every reveal sizes itself by. The object sits in the middle of the stage.
- */
-const OBJECT_HALF_WIDTH = 125;
-const OBJECT_DROP = 150;
-/** Share of a figure's height that may hide behind the object before the ring is opened. */
-const HIDDEN_ALLOWED = 0.25;
+/** Shapes the ring may take, from an oval to nearly a box. See `trace`. */
+const RING_SHAPES: readonly number[] = [2, 2.6, 3.4, 5];
 /** Figures at the back of the ring are drawn a little smaller. */
 const BACK_SCALE = 0.88;
 
@@ -78,81 +89,122 @@ const OUTLINE_TOLERANCE = 0.15;
 const HEAD_TILT: Record<CharacterPose, number> = { praying: 0.035, wailing: 0.052 };
 const HEAD_SPEED: Record<CharacterPose, number> = { praying: 1, wailing: 1.9 };
 
-interface Ring {
-  rx: number;
-  ry: number;
-  /** Half the angle left empty at the bottom, where figures would be hidden behind the object. */
-  gap: number;
+/** True where `shape` covers any of the box from (left, top) to (right, bottom). */
+function covers(shape: Shape, left: number, top: number, right: number, bottom: number): boolean {
+  const dx = Math.max(left - shape.x, 0, shape.x - right) / shape.halfWidth;
+  const dy = Math.max(top - shape.y, 0, shape.y - bottom) / shape.halfHeight;
+  return shape.round ? dx * dx + dy * dy < 1 : dx < 1 && dy < 1;
 }
 
-function ringFor(area: CastArea, height: number): Ring {
+/** True where the object would cover part of the face of a figure standing at `spot`. */
+function faceHidden(spot: Placement, object: readonly Shape[]): boolean {
+  const left = spot.x - spot.height * FACE.halfWidth;
+  const right = spot.x + spot.height * FACE.halfWidth;
+  const top = spot.baseline - spot.height * FACE.top;
+  const bottom = spot.baseline - spot.height * FACE.chin;
+  return object.some((shape) => covers(shape, left, top, right, bottom));
+}
+
+/** A place on the ring, with the distance along the ring's usable stretches to reach it. */
+interface Stop extends Placement {
+  distance: number;
+}
+
+interface Ring {
+  stops: Stop[];
+  /** Length of ring the stops cover between them. */
+  length: number;
+}
+
+/**
+ * The places round a ring that fills the band where a figure `height` tall keeps its face clear
+ * of the object, clockwise from the bottom. `squareness` is 2 for an oval and more for a ring
+ * with flatter sides and tighter corners. Where the object leaves no such place, every place
+ * round the ring is given.
+ */
+function trace(area: CastArea, height: number, squareness: number): Ring {
   const band = area.bottom - area.top;
   const rx = Math.max(
     0,
     Math.min(area.width / 2 - (height * FIGURE_WIDTH) / 2 - EDGE_GAP, band * 0.95),
   );
   const ry = Math.max(0, (band - height) / 2);
-  const objectScale = clamp(Math.min(area.width / 420, area.height / 640), 0.55, 1.5);
-  const objectBottom = area.height / 2 + OBJECT_DROP * objectScale;
-  const lowestHead = (area.top + area.bottom) / 2 + ry - height * HIDDEN_ALLOWED;
-  if (lowestHead >= objectBottom) return { rx, ry, gap: 0 };
-  const clear = OBJECT_HALF_WIDTH * objectScale + (height * FIGURE_WIDTH) / 2;
-  return { rx, ry, gap: Math.asin(Math.min(1, clear / Math.max(rx, 1))) };
+  const centreY = (area.top + area.bottom) / 2;
+  const spots = Array.from({ length: RING_STEPS }, (_, step): Placement => {
+    const angle = Math.PI / 2 + (step / RING_STEPS) * Math.PI * 2;
+    const across = Math.abs(Math.cos(angle)) / Math.max(rx, 1);
+    const down = Math.abs(Math.sin(angle)) / Math.max(ry, 1);
+    const reach = Math.pow(
+      Math.pow(across, squareness) + Math.pow(down, squareness),
+      -1 / squareness,
+    );
+    const y = reach * Math.sin(angle);
+    const scale = lerp(BACK_SCALE, 1, (y / Math.max(ry, 1) + 1) / 2);
+    return {
+      x: area.width / 2 + reach * Math.cos(angle),
+      baseline: centreY + y + height * BASELINE_DROP * scale,
+      height: height * scale,
+    };
+  });
+  const clear = spots.map((spot) => !faceHidden(spot, area.object));
+  const usable = clear.some(Boolean) ? clear : spots.map(() => true);
+  const stops: Stop[] = [];
+  let length = 0;
+  for (let step = 0; step < RING_STEPS; step++) {
+    if (!usable[step]) continue;
+    const before = (step + RING_STEPS - 1) % RING_STEPS;
+    // The first place only joins on to the last where the ring closes, which is added below.
+    if (step > 0 && usable[before]) {
+      length += Math.hypot(
+        spots[step].x - spots[before].x,
+        spots[step].baseline - spots[before].baseline,
+      );
+    }
+    stops.push({ ...spots[step], distance: length });
+  }
+  if (usable[0] && usable[RING_STEPS - 1]) {
+    length += Math.hypot(
+      spots[0].x - spots[RING_STEPS - 1].x,
+      spots[0].baseline - spots[RING_STEPS - 1].baseline,
+    );
+  }
+  return { stops, length };
 }
 
-/**
- * Points round the ring with the distance travelled to reach each: clockwise from one side of the
- * gap at the bottom, over the top, to the other side.
- */
-function trace(ring: Ring): { angle: number; distance: number }[] {
-  const start = Math.PI / 2 + ring.gap;
-  const sweep = Math.PI * 2 - ring.gap * 2;
-  const points = [{ angle: start, distance: 0 }];
-  for (let step = 1; step <= RING_STEPS; step++) {
-    const previous = points[step - 1];
-    const angle = start + (step / RING_STEPS) * sweep;
-    const dx = ring.rx * (Math.cos(angle) - Math.cos(previous.angle));
-    const dy = ring.ry * (Math.sin(angle) - Math.sin(previous.angle));
-    points.push({ angle, distance: previous.distance + Math.hypot(dx, dy) });
+/** The largest figures that fit round a ring of one shape without crowding, and that ring. */
+function fit(count: number, area: CastArea, squareness: number): { height: number; ring: Ring } {
+  const band = area.bottom - area.top;
+  let height = clamp(Math.min(band * 0.36, area.width * 0.5), MIN_HEIGHT, MAX_HEIGHT);
+  let ring = trace(area, height, squareness);
+  while (height > MIN_HEIGHT && ring.length / count < height * FIGURE_WIDTH * CROWDING) {
+    height = Math.max(MIN_HEIGHT, height * 0.96);
+    ring = trace(area, height, squareness);
   }
-  return points;
+  return { height, ring };
 }
 
 /**
  * Stands `count` figures evenly round a ring that fills the band, as large as they can be without
- * crowding. Where the bottom of the ring would put figures behind the object, that stretch is
- * left empty. Returned in the order given, which runs clockwise from the bottom left.
+ * crowding. Stretches of the ring where the object would cover a face are left empty, and the
+ * figures are made smaller until the rest has room for them. The ring is an oval unless a
+ * squarer one, which keeps further from the object, lets the figures be larger. Returned
+ * clockwise from the bottom.
  */
 export function placeCast(count: number, area: CastArea): Placement[] {
   if (count <= 0) return [];
-  const band = area.bottom - area.top;
-  let height = clamp(Math.min(band * 0.36, area.width * 0.5), MIN_HEIGHT, MAX_HEIGHT);
-  let ring = ringFor(area, height);
-  let path = trace(ring);
-  /** An open ring has a figure at each end; a closed one shares the gaps out evenly. */
-  const gaps = (open: boolean) => (open ? Math.max(1, count - 1) : count);
-  while (height > MIN_HEIGHT) {
-    const spacing = path[RING_STEPS].distance / gaps(ring.gap > 0);
-    if (spacing >= height * FIGURE_WIDTH * CROWDING) break;
-    height = Math.max(MIN_HEIGHT, height * 0.96);
-    ring = ringFor(area, height);
-    path = trace(ring);
+  let { height, ring } = fit(count, area, RING_SHAPES[0]);
+  for (const squareness of RING_SHAPES.slice(1)) {
+    const squarer = fit(count, area, squareness);
+    if (squarer.height <= height) continue;
+    height = squarer.height;
+    ring = squarer.ring;
   }
-  const open = ring.gap > 0;
-  const length = path[RING_STEPS].distance;
-  const centreY = (area.top + area.bottom) / 2;
-  let step = 0;
+  let stop = 0;
   return Array.from({ length: count }, (_, index) => {
-    const share = open ? (count > 1 ? index / (count - 1) : 0.5) : (index + 0.5) / count;
-    const target = share * length;
-    while (step < RING_STEPS && path[step + 1].distance < target) step += 1;
-    const { angle } = path[step];
-    const scale = lerp(BACK_SCALE, 1, (Math.sin(angle) + 1) / 2);
-    return {
-      x: area.width / 2 + ring.rx * Math.cos(angle),
-      baseline: centreY + ring.ry * Math.sin(angle) + height * BASELINE_DROP * scale,
-      height: height * scale,
-    };
+    const target = ((index + 0.5) / count) * ring.length;
+    while (stop < ring.stops.length - 1 && ring.stops[stop + 1].distance <= target) stop += 1;
+    const { x, baseline, height: size } = ring.stops[stop];
+    return { x, baseline, height: size };
   });
 }
 
@@ -278,7 +330,10 @@ export function createCast(images: readonly string[]): Cast {
   let drawOrder: number[] = [];
 
   function place(area: CastArea): void {
-    const key = `${area.width}:${area.height}:${area.top}:${area.bottom}`;
+    const object = area.object
+      .map((shape) => `${shape.x},${shape.y},${shape.halfWidth},${shape.halfHeight},${shape.round}`)
+      .join(';');
+    const key = `${area.width}:${area.height}:${area.top}:${area.bottom}:${object}`;
     if (key === placedFor) return;
     placedFor = key;
     placements = placeCast(count, area);

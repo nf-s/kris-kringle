@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { REVEAL_KINDS, type RevealKind } from '../../../shared/schema';
 import type { Point, Stage } from '../engine';
-import type { Motion } from '../motion';
+import type { Flick, Motion } from '../motion';
 import { createParticles } from '../particles';
 import { REVEAL_FACTORIES } from '../registry';
 import { createSfx } from '../sfx';
@@ -14,7 +14,7 @@ interface PhoneMotion {
   push: Point;
   force: number;
   turned: number;
-  flick: Point | null;
+  flick: Flick | null;
 }
 
 function still(active: boolean): PhoneMotion {
@@ -90,11 +90,19 @@ function play(
   return { completed, progress, hints, finishedAt: time };
 }
 
-/** One flick every `gap` seconds, in the direction given. */
-function flicks(gap: number, direction: Point) {
+/** One flick every `gap` seconds, in the direction and of the strength given. */
+function flicks(gap: number, direction: Point, strength: number) {
   const every = Math.round(gap / FRAME);
   return (_time: number, frame: number): Partial<PhoneMotion> =>
-    frame > 0 && frame % every === 0 ? { flick: direction } : {};
+    frame > 0 && frame % every === 0 ? { flick: { direction, strength } } : {};
+}
+
+/** The phone swung from side to side `swings` times a second, turning as it goes. */
+function rocking(swings: number) {
+  return (time: number): Partial<PhoneMotion> => ({
+    tilt: { x: Math.sin(time * Math.PI * swings) * 0.4, y: 0.9 },
+    turned: 0.8 * swings * FRAME,
+  });
 }
 
 describe('moving the phone', () => {
@@ -110,17 +118,27 @@ describe('moving the phone', () => {
   });
 
   it('winds the jack-in-the-box when twisted', () => {
-    const result = play('jack', 20, true, () => ({ turned: 8 * FRAME }));
+    const result = play('jack', 30, true, () => ({ turned: 8 * FRAME }));
     expect(result.completed).toBe(true);
-    expect(result.finishedAt).toBeGreaterThan(4);
+    expect(result.finishedAt).toBeGreaterThan(10);
     expect(result.hints[0]).toBe('Twist your phone or turn the handle');
   });
 
-  it('cracks the egg when rocked from side to side', () => {
-    const result = play('egg', 20, true, (time) => ({
-      tilt: { x: Math.sin(time * 9) * 0.4, y: 0.9 },
-    }));
+  it('winds the jack-in-the-box no faster than a finger however hard it is twisted', () => {
+    const result = play('jack', 30, true, () => ({ turned: 40 * FRAME }));
     expect(result.completed).toBe(true);
+    expect(result.finishedAt).toBeGreaterThan(8);
+  });
+
+  it('leaves the jack-in-the-box alone when the phone only turns slowly', () => {
+    const result = play('jack', 5, true, () => ({ turned: 0.8 * FRAME }));
+    expect(result.progress).toBe(0);
+  });
+
+  it('cracks the egg when rocked from side to side', () => {
+    const result = play('egg', 20, true, rocking(3));
+    expect(result.completed).toBe(true);
+    expect(result.finishedAt).toBeGreaterThan(6);
     expect(result.hints[0]).toBe('Rock your phone or tap the egg');
   });
 
@@ -129,23 +147,48 @@ describe('moving the phone', () => {
     expect(result.progress).toBe(0);
   });
 
-  it('opens the present after three flicks', () => {
-    const result = play('present', 10, true, flicks(0.8, { x: 0.6, y: -0.8 }));
-    expect(result.completed).toBe(true);
-    expect(result.finishedAt).toBeGreaterThan(2.3);
-    expect(result.hints[0]).toBe('Flick your phone or pull the ribbon');
-    expect(result.hints).toContain('One more flick or pull');
+  it('does not crack the egg when shaken', () => {
+    const shaken = play('egg', 5, true, (time) => ({ ...rocking(8)(time), force: 20 }));
+    expect(shaken.progress).toBe(0);
+    const jiggled = play('egg', 5, true, (time) => ({ ...rocking(3)(time), turned: 0 }));
+    expect(jiggled.progress).toBe(0);
   });
 
-  it('snaps the cracker after four flicks, with or without a direction', () => {
+  it('opens the present after two sharp flicks for each notch', () => {
+    const result = play('present', 10, true, flicks(0.8, { x: 0.6, y: -0.8 }, 1));
+    expect(result.completed).toBe(true);
+    expect(result.finishedAt).toBeGreaterThan(5);
+    expect(result.hints[0]).toBe('Flick your phone or pull the ribbon');
+    expect(result.hints).toContain('Nearly there');
+  });
+
+  it('takes more flicks to open the present when they are gentle', () => {
+    const result = play('present', 10, true, flicks(0.8, { x: 0.6, y: -0.8 }, 0));
+    expect(result.completed).toBe(true);
+    expect(result.finishedAt).toBeGreaterThan(7.5);
+  });
+
+  it('lets the ribbon work back when the flicks come too slowly', () => {
+    const result = play('present', 10, true, flicks(2.5, { x: 0.6, y: -0.8 }, 0));
+    expect(result.completed).toBe(false);
+    expect(result.progress).toBeLessThan(1 / 3);
+  });
+
+  it('snaps the cracker after six sharp flicks, with or without a direction', () => {
     for (const direction of [
       { x: 1, y: 0 },
       { x: 0, y: 0 },
     ]) {
-      const result = play('cracker', 10, true, flicks(0.8, direction));
+      const result = play('cracker', 10, true, flicks(0.8, direction, 1));
       expect(result.completed).toBe(true);
-      expect(result.finishedAt).toBeGreaterThan(3.1);
+      expect(result.finishedAt).toBeGreaterThan(5);
     }
+  });
+
+  it('takes twice as many flicks to snap the cracker when they are gentle', () => {
+    const result = play('cracker', 15, true, flicks(0.8, { x: 1, y: 0 }, 0));
+    expect(result.completed).toBe(true);
+    expect(result.finishedAt).toBeGreaterThan(9.5);
   });
 
   it('keeps the on-screen wording while the phone reports nothing', () => {

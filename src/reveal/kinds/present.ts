@@ -14,10 +14,16 @@ import {
   sparkle,
 } from '../draw';
 import type { Point, RevealFactory } from '../engine';
+import type { Flick } from '../motion';
 
 const COMPLETE_DELAY = 0.4;
 /** Tugs needed to undo the knot. */
 const NOTCHES = 3;
+/** Share of a notch one flick of the phone pulls the ribbon, from the gentlest to the sharpest. */
+const FLICK_PULL = { gentle: 0.35, sharp: 0.7 };
+/** Seconds the ribbon stays pulled after a flick, and the share of a notch it then loses each second. */
+const FLICK_HOLD = 0.9;
+const FLICK_SLACK = 0.8;
 /** Keep pull distances this far clear of the stage edges, in pixels. */
 const EDGE = 12;
 /** Seconds of playing with the box, without touching the ribbon, before the tassel pulses harder. */
@@ -31,6 +37,8 @@ const TAP_SLOP = 10;
 const BODY = { halfWidth: 95, height: 150 };
 const LID = { halfWidth: 106, top: -192, height: 46 };
 const KNOT_Y = LID.top;
+/** The space the two loops of the bow take up above the knot. */
+const BOW = { halfWidth: 74, height: 52 };
 const LID_CENTRE_Y = LID.top + LID.height / 2;
 const TAIL_REST: Point = { x: 46, y: -84 };
 const TAIL_DROOP: Point = { x: 29, y: -58 };
@@ -95,8 +103,8 @@ interface Opened {
 /** `flicking` is whether flicking the phone pulls the ribbon too. */
 function hintFor(notches: number, flicking: boolean): string {
   if (notches === 0) return flicking ? 'Flick your phone or pull the ribbon' : 'Pull the ribbon';
-  if (notches === 1) return flicking ? 'Flick or pull again' : 'Pull again';
-  return flicking ? 'One more flick or pull' : 'One more pull';
+  if (notches === 1) return flicking ? 'Keep flicking or pull again' : 'Pull again';
+  return flicking ? 'Nearly there' : 'One more pull';
 }
 
 /** Soft limit: follows `value` near zero and eases towards `range`. */
@@ -461,6 +469,9 @@ export const createPresent: RevealFactory = (stage) => {
   let grab: Grab | null = null;
   let tension = 0;
   let notches = 0;
+  /** Share of the way to the next notch that flicks of the phone have pulled the ribbon. */
+  let yanked = 0;
+  let lastYankAt = 0;
   let opened: Opened | null = null;
   let completeSent = false;
   let emitTimer = 0;
@@ -711,17 +722,39 @@ export const createPresent: RevealFactory = (stage) => {
     showHint();
   }
 
-  /** A flick of the phone pulls the ribbon out one notch, towards wherever the flick went. */
-  function yank(flick: Point, l: Layout): void {
+  /**
+   * A flick of the phone pulls the ribbon part of the way to its next notch, towards wherever
+   * the flick went: further the sharper it was. The knot gives once the flicks add up.
+   */
+  function yank(flick: Flick, l: Layout): void {
     ribbonTouched = true;
-    const length = Math.hypot(flick.x, Math.max(0.5, Math.abs(flick.y)));
-    pullX.value = (flick.x / length) * l.base * 0.8;
-    pullY.value = (Math.max(0.5, Math.abs(flick.y)) / length) * l.base * 0.8;
-    giveNotch(l);
+    yanked += lerp(FLICK_PULL.gentle, FLICK_PULL.sharp, flick.strength);
+    lastYankAt = stage.time;
+    const down = Math.max(0.5, Math.abs(flick.direction.y));
+    const length = Math.hypot(flick.direction.x, down);
+    const reach = l.base * 0.8 * Math.min(1, yanked);
+    pullX.value = (flick.direction.x / length) * reach;
+    pullY.value = (down / length) * reach;
+    if (yanked >= 1) {
+      yanked = 0;
+      giveNotch(l);
+      return;
+    }
+    stage.sfx.stretch(yanked);
+    stage.haptic(10);
+    stage.setProgress((notches + yanked) / NOTCHES);
+  }
+
+  /** The ribbon works back into the knot when the flicks stop coming. */
+  function slacken(dt: number): void {
+    if (yanked <= 0 || stage.time - lastYankAt < FLICK_HOLD) return;
+    yanked = Math.max(0, yanked - FLICK_SLACK * dt);
+    stage.setProgress((notches + yanked) / NOTCHES);
   }
 
   function grabRibbon(point: Point, l: Layout): void {
     ribbonTouched = true;
+    yanked = 0;
     const sideways = Math.max(stage.width - EDGE - point.x, point.x - EDGE);
     const room = Math.min(stage.height - EDGE - point.y, sideways);
     const threshold = Math.max(16, Math.min(l.base * (1 + 0.2 * notches), room * 0.92));
@@ -956,6 +989,25 @@ export const createPresent: RevealFactory = (stage) => {
   }
 
   return {
+    footprint() {
+      const { cx, floorY, scale } = layout();
+      return [
+        {
+          x: cx,
+          y: floorY + (LID.top / 2) * scale,
+          halfWidth: LID.halfWidth * scale,
+          halfHeight: (-LID.top / 2) * scale,
+          round: false,
+        },
+        {
+          x: cx,
+          y: floorY + (KNOT_Y - BOW.height / 2) * scale,
+          halfWidth: BOW.halfWidth * scale,
+          halfHeight: (BOW.height / 2) * scale,
+          round: false,
+        },
+      ];
+    },
     update(dt) {
       const l = layout();
       wobble.update(dt);
@@ -972,6 +1024,7 @@ export const createPresent: RevealFactory = (stage) => {
       if (opened === null && stage.motion.flick && !(grab !== null && grab.kind === 'ribbon')) {
         yank(stage.motion.flick, l);
       }
+      if (opened === null) slacken(dt);
       if (opened === null) {
         if (grab !== null && grab.kind === 'ribbon') {
           const follow = Math.min(1, dt * 22);

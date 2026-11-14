@@ -29,7 +29,13 @@ const COMPLETE_DELAY = 0.5;
 const EXIT_TIME = 0.55;
 const TAP_SLOP = 8;
 /** Turns of the handle for each turn of the phone, which is twisted back and forth by the wrist. */
-const PHONE_WIND = 1.5;
+const PHONE_WIND = 0.9;
+/** The phone has to turn faster than this, in radians per second, to move the handle. */
+const TWIST_FLOOR = 1;
+/** Fastest the phone can turn the handle, in radians per second: about as fast as a finger. */
+const TWIST_LIMIT = 9;
+/** How quickly the handle picks up and loses the phone's turning, per second. */
+const TWIST_FOLLOW = 12;
 /** Original music-box loop, in pentatonic steps. */
 const MELODY: readonly number[] = [
   4, 6, 7, 6, 4, 2, 3, 4, 7, 9, 8, 7, 6, 4, 5, 4, 2, 4, 3, 1, 2, 4, 6, 5,
@@ -535,6 +541,8 @@ export const createJack: RevealFactory = (stage) => {
   let shiver = 0;
   /** True in a frame where twisting the phone turned the handle. */
   let twisting = false;
+  /** How fast the phone is turning, in radians per second, evened out over a moment. */
+  let twistRate = 0;
   let shown = 0;
   let hint = idleHint();
   let nextTease = 3.5;
@@ -766,9 +774,14 @@ export const createJack: RevealFactory = (stage) => {
     else showHint(idleHint());
   }
 
-  /** Twisting the phone either way turns the handle forwards. */
-  function windByPhone(): void {
-    const turn = stage.motion.turned * PHONE_WIND;
+  /**
+   * Twisting the phone either way turns the handle forwards, no faster than a finger could.
+   * The phone reports its turning in bursts, so it is evened out before the limit is applied.
+   */
+  function windByPhone(dt: number): void {
+    if (dt <= 0) return;
+    twistRate += (stage.motion.turned / dt - twistRate) * (1 - Math.exp(-dt * TWIST_FOLLOW));
+    const turn = clamp((twistRate - TWIST_FLOOR) * PHONE_WIND, 0, TWIST_LIMIT) * dt;
     twisting = turn > 0;
     if (!twisting) return;
     arm += turn;
@@ -917,6 +930,27 @@ export const createJack: RevealFactory = (stage) => {
   }
 
   return {
+    footprint() {
+      const { cx, floorY, scale } = layout();
+      const boxHeight = (BOX.height + LID.thickness) * scale;
+      const sweep = (ARM + KNOB_RADIUS) * scale;
+      return [
+        {
+          x: cx,
+          y: floorY - boxHeight / 2,
+          halfWidth: (BOX.halfWidth + LID.overhang) * scale,
+          halfHeight: boxHeight / 2,
+          round: false,
+        },
+        {
+          x: cx + AXLE.x * scale,
+          y: floorY + AXLE.y * scale,
+          halfWidth: sweep,
+          halfHeight: sweep,
+          round: true,
+        },
+      ];
+    },
     update(dt) {
       if (dt <= 0) return;
       const l = layout();
@@ -952,7 +986,7 @@ export const createJack: RevealFactory = (stage) => {
         return;
       }
       updateIdle(dt);
-      windByPhone();
+      windByPhone(dt);
       updateWinding(dt);
     },
     draw(ctx) {

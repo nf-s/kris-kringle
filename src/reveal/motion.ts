@@ -7,7 +7,8 @@ export interface Motion {
   readonly active: boolean;
   /**
    * Which way things on the screen would fall, as a share of gravity: x right, y down. A phone
-   * held upright reads about (0, 1) and one lying flat about (0, 0).
+   * held upright reads about (0, 1) and one lying flat about (0, 0). It follows the phone
+   * closely, so shaking shows up in it as well as leaning.
    */
   readonly tilt: Point;
   /**
@@ -19,11 +20,15 @@ export interface Motion {
   readonly force: number;
   /** Radians the phone has turned, about any axis, since the last frame. */
   readonly turned: number;
-  /**
-   * Set for the one frame in which the phone is flicked: the direction along the screen, or
-   * (0, 0) for a flick straight towards or away from the person.
-   */
-  readonly flick: Point | null;
+  /** Set for the one frame in which the phone is flicked. */
+  readonly flick: Flick | null;
+}
+
+export interface Flick {
+  /** Along the screen, or (0, 0) for a flick straight towards or away from the person. */
+  readonly direction: Point;
+  /** How sharp it was, from 0 for one that only just counts to 1. */
+  readonly strength: number;
 }
 
 /**
@@ -57,13 +62,21 @@ const GRAVITY = 9.81;
 const GRAVITY_SETTLE = 0.25;
 /** How fast `force` fades once the phone is still, per second. */
 const FORCE_FADE = 6;
-/** Turning slower than this, in radians per second, is a hand holding the phone, not a twist. */
-const TURN_FLOOR = 0.5;
-/** A flick starts when the movement passes `FLICK_START` m/s² and can repeat once it has dropped
- *  below `FLICK_END` and `FLICK_GAP` seconds have gone by. */
-const FLICK_START = 9;
-const FLICK_END = 4;
-const FLICK_GAP = 0.6;
+/** Turning slower than this, in radians per second, is a hand holding the phone still. */
+const TURN_FLOOR = 0.25;
+/** Seconds over which `tilt` follows the phone. */
+const TILT_SETTLE = 0.1;
+/**
+ * A flick starts when the movement passes `FLICK_START` m/s², which handling a phone does not,
+ * and can repeat once it has dropped below `FLICK_END` and `FLICK_GAP` seconds have gone by.
+ * It is at full strength from `FLICK_FULL` m/s².
+ */
+const FLICK_START = 14;
+const FLICK_FULL = 32;
+const FLICK_END = 5;
+const FLICK_GAP = 0.45;
+/** Seconds a flick is watched for its sharpest point before it is reported. */
+const FLICK_RISE = 0.08;
 /** A flick weaker than this along the screen has no direction worth reporting. */
 const FLICK_AIM = 3;
 /** Longest gap between two readings that still counts as continuous, in seconds. */
@@ -141,18 +154,21 @@ export function createMotionSensor(): MotionSensor {
   let mustAsk = false;
   let lastEventAt: number | null = null;
   let gravity: Vector = { x: 0, y: 0, z: 0 };
+  let leaning: Vector = { x: 0, y: 0, z: 0 };
   let peak = 0;
   let peakPush: Point = STILL;
   let turnedSoFar = 0;
-  let flicked: Point | null = null;
+  let flicked: Flick | null = null;
   let flickArmed = true;
   let lastFlickAt = -Infinity;
+  /** The flick now under way: its sharpest point so far and which way that went. */
+  let rising: { peak: number; aim: Point } | null = null;
 
   let tilt: Point = STILL;
   let push: Point = STILL;
   let force = 0;
   let turned = 0;
-  let flick: Point | null = null;
+  let flick: Flick | null = null;
 
   function state(): MotionState {
     if (live) return enabled ? 'on' : 'off';
@@ -169,6 +185,7 @@ export function createMotionSensor(): MotionSensor {
     if (!live) {
       live = true;
       gravity = felt;
+      leaning = felt;
       sensor.onChange?.();
     }
 
@@ -178,6 +195,12 @@ export function createMotionSensor(): MotionSensor {
       x: gravity.x + (felt.x - gravity.x) * blend,
       y: gravity.y + (felt.y - gravity.y) * blend,
       z: gravity.z + (felt.z - gravity.z) * blend,
+    };
+    const follow = 1 - Math.exp(-seconds / TILT_SETTLE);
+    leaning = {
+      x: leaning.x + (felt.x - leaning.x) * follow,
+      y: leaning.y + (felt.y - leaning.y) * follow,
+      z: leaning.z + (felt.z - leaning.z) * follow,
     };
     const moved = { x: felt.x - gravity.x, y: felt.y - gravity.y, z: felt.z - gravity.z };
     const strength = Math.hypot(moved.x, moved.y, moved.z);
@@ -192,13 +215,23 @@ export function createMotionSensor(): MotionSensor {
 
     if (strength < FLICK_END) flickArmed = true;
     const sinceFlick = (event.timeStamp - lastFlickAt) / 1000;
-    if (flickArmed && strength > FLICK_START && sinceFlick > FLICK_GAP) {
-      flickArmed = false;
-      lastFlickAt = event.timeStamp;
-      const aim = alongScreen(moved);
-      const length = Math.hypot(aim.x, aim.y);
-      flicked = length < FLICK_AIM ? STILL : { x: aim.x / length, y: aim.y / length };
+    if (rising === null) {
+      if (flickArmed && strength > FLICK_START && sinceFlick > FLICK_GAP) {
+        flickArmed = false;
+        lastFlickAt = event.timeStamp;
+        rising = { peak: strength, aim: alongScreen(moved) };
+      }
+      return;
     }
+    if (strength > rising.peak) rising = { peak: strength, aim: alongScreen(moved) };
+    if (sinceFlick < FLICK_RISE) return;
+    const length = Math.hypot(rising.aim.x, rising.aim.y);
+    flicked = {
+      direction:
+        length < FLICK_AIM ? STILL : { x: rising.aim.x / length, y: rising.aim.y / length },
+      strength: clamp((rising.peak - FLICK_START) / (FLICK_FULL - FLICK_START), 0, 1),
+    };
+    rising = null;
   }
 
   const sensor: MotionSensor = {
@@ -244,7 +277,7 @@ export function createMotionSensor(): MotionSensor {
     onChange: null,
     advance(dt) {
       const moving = live && enabled;
-      const along = alongScreen(gravity);
+      const along = alongScreen(leaning);
       tilt = moving
         ? { x: clamp(along.x / GRAVITY, -1, 1), y: clamp(along.y / GRAVITY, -1, 1) }
         : STILL;

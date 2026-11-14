@@ -1034,6 +1034,19 @@ export const createGlobe: RevealFactory = (stage) => {
   }
 
   return {
+    footprint() {
+      const { cx, cy, radius } = layout();
+      return [
+        { x: cx, y: cy, halfWidth: radius, halfHeight: radius, round: true },
+        {
+          x: cx,
+          y: cy + radius * 1.09,
+          halfWidth: radius * 0.95,
+          halfHeight: radius * 0.31,
+          round: false,
+        },
+      ];
+    },
     update(dt) {
       if (dt <= 0) return;
       const l = layout();

@@ -26,15 +26,21 @@ from the draw. Deleting a character removes it from every event.
 
 On a reveal page the event's characters kneel in a ring round the object, praying. As the person
 works through the task they switch to wailing one at a time, and they all jig once the name is
-out. A reveal link only ever serves the characters attached to its own event, and never their
-names. Previews at `/preview/<kind>` show no characters.
+out. They stand behind the object, so each reveal reports the space its object takes up
+(`footprint`) and nobody is placed where it would cover their face; on a narrow screen the ring
+turns squarer and the figures smaller until everyone fits. A reveal link only ever serves the
+characters attached to its own event, and never their names. Previews at `/preview/<kind>` show
+no characters.
 
 On a phone each reveal can also be done by moving the phone: shake it for the snow globe, twist
 it back and forth for the jack-in-the-box, rock it from side to side for the egg, and flick it
-for the present and the cracker. The hint under the object names both ways once the phone is
-reporting its movement, and everything still works by touch alone. A "Motion on / Motion off"
-button appears under the sound button on phones that report movement; on an iPhone it starts
-off, and turning it on brings up the system's permission prompt.
+for the present and the cracker. Moving the phone is meant to take about as much effort as
+touch: the handle turns no faster than a finger could turn it, rocking has to be a real swing
+from side to side rather than a shake, and it takes several flicks to pull the ribbon out a
+notch or tear the cracker, fewer the sharper they are. The hint under the object names both
+ways once the phone is reporting its movement, and everything still works by touch alone. A
+"Motion on / Motion off" button appears under the sound button on phones that report movement;
+on an iPhone it starts off, and turning it on brings up the system's permission prompt.
 
 The draw prefers one loop through the whole group. If exclusions rule that out it falls back to
 smaller loops, and reports an error if no draw fits.
@@ -61,13 +67,13 @@ The Worker reads the password from the `ADMIN_PASSWORD` secret.
 
 ## Commands
 
-| Command             | Purpose                             |
-| ------------------- | ----------------------------------- |
-| `npm run dev`       | Local dev server (Vite + workerd)   |
-| `npm test`          | Unit tests: draw, API, phone motion |
-| `npm run typecheck` | TypeScript, front end and Worker    |
-| `npm run format`    | Prettier                            |
-| `npm run deploy`    | Build and deploy to Cloudflare      |
+| Command             | Purpose                                             |
+| ------------------- | --------------------------------------------------- |
+| `npm run dev`       | Local dev server (Vite + workerd)                   |
+| `npm test`          | Unit tests: draw, API, phone motion, cast placement |
+| `npm run typecheck` | TypeScript, front end and Worker                    |
+| `npm run format`    | Prettier                                            |
+| `npm run deploy`    | Build and deploy to Cloudflare                      |
 
 ## Layout
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createMotionSensor, type MotionSensor } from './motion';
+import { createMotionSensor, type Flick, type MotionSensor } from './motion';
 
 interface Reading {
   x: number;
@@ -139,19 +139,35 @@ describe('motion sensor', () => {
     expect(sensor.motion.force).toBeLessThan(0.5);
   });
 
-  it('reports one flick for one sharp movement', () => {
+  /** Every flick reported over two seconds in which the phone is jolted sideways once. */
+  function jolted(size: number): Flick[] {
     const device = phone(ANDROID);
     const sensor = createMotionSensor();
     hold(device, sensor, 0.5, () => ({ acceleration: UPRIGHT_ANDROID }));
-    const flicks: { x: number; y: number }[] = [];
+    const flicks: Flick[] = [];
     for (let time = 0; time < 2; time += STEP / 1000) {
-      const jolt = time > 0.5 && time < 0.6 ? -18 : 0;
+      const jolt = time > 0.5 && time < 0.6 ? -size : 0;
       device.send({ x: jolt, y: 9.81, z: 0 });
       sensor.advance(STEP / 1000);
       if (sensor.motion.flick) flicks.push(sensor.motion.flick);
     }
+    return flicks;
+  }
+
+  it('reports one flick for one sharp movement', () => {
+    const flicks = jolted(22);
     expect(flicks).toHaveLength(1);
-    expect(flicks[0].x).toBeCloseTo(1, 1);
+    expect(flicks[0].direction.x).toBeCloseTo(1, 1);
+    expect(flicks[0].strength).toBeGreaterThan(0.3);
+    expect(flicks[0].strength).toBeLessThan(0.6);
+  });
+
+  it('reports a sharper flick as stronger, up to a limit', () => {
+    expect(jolted(60)[0].strength).toBe(1);
+  });
+
+  it('does not count a nudge as a flick', () => {
+    expect(jolted(10)).toHaveLength(0);
   });
 
   it('does not count carrying the phone about as a flick', () => {

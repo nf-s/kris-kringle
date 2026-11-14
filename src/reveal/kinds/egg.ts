@@ -20,7 +20,13 @@ const SEAL_AFTER = 1.7;
 const SEAL_INTERVAL = 0.7;
 const COMPLETE_DELAY = 0.4;
 /** How far the phone has to lean to one side, as a share of gravity, to knock the egg. */
-const ROCK_LEAN = 0.17;
+const ROCK_LEAN = 0.26;
+/** Radians the phone has to turn in swinging from one side to the other. */
+const ROCK_SWING = 0.2;
+/** Shortest time between two knocks, in seconds. */
+const ROCK_GAP = 0.25;
+/** Moved harder than this, in m/s², the phone is being shaken, which does not knock the egg. */
+const ROCK_CALM = 9;
 /** How far the egg leans with the phone. */
 const ROCK_TILT = 6;
 
@@ -134,6 +140,9 @@ export const createEgg: RevealFactory = (stage) => {
   let dragStart: Point | null = null;
   /** Side the phone last leaned to: -1, 0 or 1. Null until the phone reports its movement. */
   let rockSide: number | null = null;
+  /** Radians the phone has turned since it last leaned to a side. */
+  let rockSwing = 0;
+  let lastRockAt = -Infinity;
   let hint = '';
 
   /** Shows `moving` in place of `tapping` while the phone's own movement is in use. */
@@ -269,7 +278,7 @@ export const createEgg: RevealFactory = (stage) => {
 
   /**
    * Rocking the phone from side to side knocks the egg on the side it tips towards, once for
-   * each swing, and the egg leans with the phone.
+   * each swing, and the egg leans with the phone. Shaking it does not count as rocking.
    */
   function rock(): void {
     if (!stage.motion.active) {
@@ -278,13 +287,19 @@ export const createEgg: RevealFactory = (stage) => {
     }
     const lean = stage.motion.tilt.x;
     if (dragStart === null) tilt.target = clamp(lean * ROCK_TILT, -3.2, 3.2);
+    rockSwing += stage.motion.turned;
     const side = Math.abs(lean) > ROCK_LEAN ? Math.sign(lean) : 0;
     if (rockSide === null) {
       rockSide = side;
       return;
     }
     if (side === 0 || side === rockSide) return;
+    const swung = rockSwing;
     rockSide = side;
+    rockSwing = 0;
+    if (swung < ROCK_SWING || stage.motion.force > ROCK_CALM) return;
+    if (stage.time - lastRockAt < ROCK_GAP) return;
+    lastRockAt = stage.time;
     const l = layout();
     strike({ x: l.cx + side * l.rx * 0.45, y: l.cy + rand(-0.35, 0.35) * l.ry });
     dragStart = null;
@@ -460,6 +475,18 @@ export const createEgg: RevealFactory = (stage) => {
   }
 
   return {
+    footprint() {
+      const l = layout();
+      return [
+        {
+          x: stage.width / 2,
+          y: stage.height * 0.52,
+          halfWidth: l.rx,
+          halfHeight: l.ry,
+          round: true,
+        },
+      ];
+    },
     update(dt) {
       squash.update(dt);
       tilt.update(dt);

@@ -40,7 +40,21 @@ export interface Stage {
   complete(origin: Point): void;
 }
 
+/** Part of an object: a box centred on (x, y), or the oval that fits inside it. */
+export interface Shape {
+  x: number;
+  y: number;
+  halfWidth: number;
+  halfHeight: number;
+  round: boolean;
+}
+
 export interface Reveal {
+  /**
+   * The space the object takes up at rest, before anyone touches it. The cast stands behind
+   * the object and keeps its faces out from behind these shapes.
+   */
+  footprint(): Shape[];
   update(dt: number): void;
   draw(ctx: CanvasRenderingContext2D): void;
   onPointerDown?(point: Point): void;

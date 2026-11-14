@@ -11,6 +11,7 @@ import {
   sparkle,
 } from '../draw';
 import type { Point, RevealFactory } from '../engine';
+import type { Flick } from '../motion';
 
 const COMPLETE_DELAY = 0.35;
 const FLASH_RGB = '255, 248, 230';
@@ -29,6 +30,8 @@ const TAP_TIME = 0.35;
 const TAP_SLOP = 10;
 /** How far, in design units, an end jumps out when a flick of the phone pulls it. */
 const FLICK_STRETCH = 60;
+/** Share of the whole tear one flick of the phone makes, from the gentlest to the sharpest. */
+const FLICK_TEAR = { gentle: 0.09, sharp: 0.17 };
 
 /** Design units along the cracker's axis, measured from its centre. */
 const REST_SPAN = 330;
@@ -551,13 +554,15 @@ export const createCracker: RevealFactory = (stage) => {
   }
 
   /**
-   * A flick of the phone tears as much as one full pull: on the end it was flicked towards, or
-   * on each end in turn when it had no sideways direction.
+   * A flick of the phone tears the paper a little, more the sharper it was: on the end it was
+   * flicked towards, or on each end in turn when it had no sideways direction.
    */
-  function tug(flick: Point, l: Layout): void {
-    if (flick.x === 0) flickSide = -flickSide;
-    const side = flick.x === 0 ? flickSide : Math.sign(flick.x);
-    damageOf(side).amount += Math.min(SLIP_AT, 1 - totalTear());
+  function tug(flick: Flick, l: Layout): void {
+    const aim = flick.direction.x;
+    if (aim === 0) flickSide = -flickSide;
+    const side = aim === 0 ? flickSide : Math.sign(aim);
+    const tear = lerp(FLICK_TEAR.gentle, FLICK_TEAR.sharp, flick.strength);
+    damageOf(side).amount += Math.min(tear, 1 - totalTear());
     const held = stretchOf(side);
     held.value = Math.max(held.value, FLICK_STRETCH);
     showProgress();
@@ -744,6 +749,28 @@ export const createCracker: RevealFactory = (stage) => {
   }
 
   return {
+    footprint() {
+      const { restX, restY, unit } = layout();
+      const reach = ((END_INNER + END_OUTER) / 2) * unit;
+      const end = (side: number) => ({
+        x: restX + side * reach * Math.cos(TILT),
+        y: restY + side * reach * Math.sin(TILT),
+        halfWidth: ((END_OUTER - END_INNER) / 2) * unit,
+        halfHeight: END_OUTER_RADIUS * unit,
+        round: false,
+      });
+      return [
+        {
+          x: restX,
+          y: restY,
+          halfWidth: END_INNER * unit,
+          halfHeight: BARREL_RADIUS * unit,
+          round: false,
+        },
+        end(-1),
+        end(1),
+      ];
+    },
     update(dt) {
       rock.update(dt);
       offX.update(dt);
