@@ -19,6 +19,16 @@ Secret-gift draw with an interactive reveal for each person. Runs on Cloudflare 
 Adding or removing people clears the draw. Redrawing keeps the same links. Saving exclusions only
 clears the draw if it gives someone a person they are now excluded from.
 
+Characters live in one library shared by every event. The admin imports them from a folder
+(`characters.json` plus the images it names); importing a name that already exists replaces that
+character's image. Each event has its own ordered list of attached characters, saved separately
+from the draw. Deleting a character removes it from every event.
+
+On a reveal page the event's characters kneel in a ring round the object, praying. As the person
+works through the task they switch to wailing one at a time, and they all jig once the name is
+out. A reveal link only ever serves the characters attached to its own event, and never their
+names. Previews at `/preview/<kind>` show no characters.
+
 The draw prefers one loop through the whole group. If exclusions rule that out it falls back to
 smaller loops, and reports an error if no draw fits.
 
@@ -29,7 +39,11 @@ so links cannot be guessed by brute force.
 
 One Durable Object holds every event. The original event stays under its original storage key
 (`event`, shown as event id `main`) and cannot be deleted. Other events are stored as
-`event:<id>`.
+`event:<id>`. Each event's attached character ids are stored on the event (`characterIds`).
+
+The character library is one list under `characters` (id, name, creation time, oldest first).
+Each character's sprite sheet is stored under its own key, `character-image:<id>`, as its content
+type and bytes.
 
 ## Admin password
 
@@ -51,7 +65,14 @@ The Worker reads the password from the `ADMIN_PASSWORD` secret.
 ## Layout
 
 - `worker/` — API. `event.ts` holds the draw logic, `app.ts` the routes, `index.ts` the Durable
-  Object, `words.ts` the link word lists, `rate-limit.ts` the link-guessing limit.
+  Object, `words.ts` the link word lists, `rate-limit.ts` the link-guessing limit,
+  `characters.ts` the character library and upload validation.
 - `shared/schema.ts` — Zod schemas shared by the API and the front end.
-- `src/admin/` — admin page. `exclusions.ts` is the exclusion grid, `activity.ts` the chart.
-- `src/reveal/` — reveal page. `stage.ts` runs the canvas loop, `kinds/` has one file per reveal.
+- `src/admin/` — admin page. `exclusions.ts` is the exclusion grid, `activity.ts` the chart,
+  `characters.ts` the character library and each event's character picker.
+- `src/reveal/` — reveal page. `stage.ts` runs the canvas loop, `kinds/` has one file per reveal,
+  `cast.ts` places and animates the characters, `draw.ts` has the shared drawing helpers
+  including the ink outline every object is drawn with.
+- `src/characters/` — `import.ts` builds a character's sprite sheet in the browser from the
+  imported artwork, `sprite.ts` draws one. A sheet is two rows (praying, wailing) of three
+  384×480 panels (body, head, parts in front of the head); the sizes are in `shared/schema.ts`.

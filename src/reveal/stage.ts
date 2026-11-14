@@ -1,10 +1,21 @@
+import { createCast, type CastArea } from './cast';
 import { CONFETTI_COLORS, clamp, rand } from './draw';
 import type { Point, Reveal, RevealFactory, Stage } from './engine';
 import { createParticles } from './particles';
 import type { Sfx } from './sfx';
 
+export interface StageCast {
+  /** Sits behind the name card, so the cast never covers it. */
+  canvas: HTMLCanvasElement;
+  /** Sprite sheet of each character, in the order they stand. */
+  images: readonly string[];
+  /** Top and bottom of the band the cast may stand in, in CSS pixels from the top of the stage. */
+  band(): { top: number; bottom: number };
+}
+
 export interface StageOptions {
   canvas: HTMLCanvasElement;
+  cast?: StageCast;
   receiverName: string;
   factory: RevealFactory;
   sfx: Sfx;
@@ -27,17 +38,24 @@ interface Snowflake {
 
 const CONFETTI_CANNON_SECONDS = 1.6;
 const CONFETTI_DRIZZLE_SECONDS = 9;
+/** Share of the screen shake passed on to the cast. */
+const CAST_SHAKE = 0.5;
 
 export function createStage(options: StageOptions): StageHandle {
   const { canvas, sfx } = options;
   const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Canvas 2D is not available');
+  const castCanvas = options.cast?.canvas;
+  const castContext = castCanvas?.getContext('2d');
+  if (!ctx || castContext === null) throw new Error('Canvas 2D is not available');
+  const cast = options.cast ? createCast(options.cast.images) : null;
+  let castArea: CastArea = { width: 0, height: 0, top: 0, bottom: 0 };
 
   const particles = createParticles();
   let width = 0;
   let height = 0;
   let time = 0;
   let shakeAmount = 0;
+  let progress = 0;
   let completedAt: number | null = null;
   let drizzleDebt = 0;
   let frame = 0;
@@ -69,11 +87,13 @@ export function createStage(options: StageOptions): StageHandle {
     },
     setHint: options.onHint,
     setProgress(value) {
-      options.onProgress(clamp(value, 0, 1));
+      progress = clamp(value, 0, 1);
+      options.onProgress(progress);
     },
     complete(origin) {
       if (completedAt !== null) return;
       completedAt = time;
+      progress = 1;
       options.onProgress(1);
       sfx.fanfare();
       particles.burst({
@@ -97,9 +117,13 @@ export function createStage(options: StageOptions): StageHandle {
     const ratio = Math.min(window.devicePixelRatio || 1, 2);
     width = rect.width;
     height = rect.height;
-    canvas.width = Math.round(width * ratio);
-    canvas.height = Math.round(height * ratio);
-    ctx?.setTransform(ratio, 0, 0, ratio, 0, 0);
+    for (const context of [ctx, castContext]) {
+      if (!context) continue;
+      context.canvas.width = Math.round(width * ratio);
+      context.canvas.height = Math.round(height * ratio);
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    }
+    if (options.cast) castArea = { width, height, ...options.cast.band() };
   }
   resize();
 
@@ -217,16 +241,26 @@ export function createStage(options: StageOptions): StageHandle {
       }
     }
     reveal.update(dt);
+    cast?.update(dt, progress, completedAt !== null);
     emitConfetti(dt);
     particles.update(dt);
     shakeAmount *= Math.pow(0.002, dt);
+    const shaking = shakeAmount > 0.2;
+    const shakeX = shaking ? rand(-shakeAmount, shakeAmount) : 0;
+    const shakeY = shaking ? rand(-shakeAmount, shakeAmount) : 0;
+
+    if (cast && castContext) {
+      castContext.clearRect(0, 0, width, height);
+      castContext.save();
+      castContext.translate(shakeX * CAST_SHAKE, shakeY * CAST_SHAKE);
+      cast.draw(castContext, castArea, time);
+      castContext.restore();
+    }
 
     context.clearRect(0, 0, width, height);
     drawSnow(context);
     context.save();
-    if (shakeAmount > 0.2) {
-      context.translate(rand(-shakeAmount, shakeAmount), rand(-shakeAmount, shakeAmount));
-    }
+    context.translate(shakeX, shakeY);
     reveal.draw(context);
     context.restore();
     particles.draw(context);
@@ -253,6 +287,7 @@ export function createStage(options: StageOptions): StageHandle {
       canvas.removeEventListener('contextmenu', suppress);
       document.removeEventListener('gesturestart', suppress);
       window.removeEventListener('resize', resize);
+      cast?.destroy();
     },
   };
 }

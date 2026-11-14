@@ -3,21 +3,35 @@ import {
   MAIN_EVENT_ID,
   addPeopleRequestSchema,
   createEventRequestSchema,
+  eventCharactersRequestSchema,
   exclusionsRequestSchema,
   settingsRequestSchema,
   updatePersonRequestSchema,
 } from '../shared/schema';
 import {
+  addCharacter,
+  characterIds,
+  parseCharacterForm,
+  removeCharacter,
+  renameCharacter,
+  toCharacterList,
+  type CharacterImage,
+  type StoredCharacter,
+} from './characters';
+import {
   addPeople,
   allTokens,
   clearDraw,
   createEvent,
+  detachCharacter,
   drawNames,
   findByToken,
+  hasCharacter,
   lookupReveal,
   randomToken,
   recordVisit,
   removePerson,
+  setCharacters,
   setExclusions,
   setReveal,
   toAdminState,
@@ -37,8 +51,19 @@ export interface EventRepository {
   remove(id: string): Promise<void>;
 }
 
+/** The character library shared by every event. Each image is stored separately. */
+export interface CharacterRepository {
+  /** Every character, oldest first. */
+  list(): Promise<StoredCharacter[]>;
+  save(characters: StoredCharacter[]): Promise<void>;
+  loadImage(id: string): Promise<CharacterImage | null>;
+  saveImage(id: string, image: CharacterImage): Promise<void>;
+  removeImage(id: string): Promise<void>;
+}
+
 interface AppOptions {
   repository: EventRepository;
+  characters: CharacterRepository;
   adminPassword: string;
   limiter: MissLimiter;
   now?: () => number;
@@ -65,12 +90,25 @@ async function readJson(c: Context): Promise<unknown> {
   }
 }
 
+async function readForm(c: Context): Promise<unknown> {
+  try {
+    return await c.req.parseBody();
+  } catch {
+    return null;
+  }
+}
+
+function imageResponse(c: Context, image: CharacterImage, cacheControl: string) {
+  return c.body(image.bytes, 200, { 'Content-Type': image.type, 'Cache-Control': cacheControl });
+}
+
 function clientKey(c: Context): string {
   return c.req.header('cf-connecting-ip') ?? 'unknown';
 }
 
 export function createApp({
   repository,
+  characters,
   adminPassword,
   limiter,
   now = Date.now,
@@ -93,6 +131,10 @@ export function createApp({
 
   async function eventList(c: Context) {
     return c.json({ events: (await repository.list()).map(toSummary) });
+  }
+
+  async function characterList(c: Context) {
+    return c.json(toCharacterList(await characters.list()));
   }
 
   app.use('/api/admin/*', async (c, next) => {
@@ -188,6 +230,71 @@ export function createApp({
     changeEvent(c, c.req.param('eventId'), clearDraw),
   );
 
+  app.put('/api/admin/events/:eventId/characters', async (c) => {
+    const body = eventCharactersRequestSchema.safeParse(await readJson(c));
+    if (!body.success) return c.json({ error: 'Invalid characters' }, 400);
+    const libraryIds = characterIds(await characters.list());
+    return changeEvent(
+      c,
+      c.req.param('eventId'),
+      (event) =>
+        setCharacters(event, body.data.characterIds, libraryIds) ?? 'Unknown or repeated character',
+    );
+  });
+
+  app.get('/api/admin/characters', (c) => characterList(c));
+
+  app.post('/api/admin/characters', async (c) => {
+    const form = parseCharacterForm(await readForm(c), true);
+    if (typeof form === 'string') return c.json({ error: form }, 400);
+    if (!form.image) return c.json({ error: 'Choose an image' }, 400);
+    const id = randomToken(9);
+    const library = addCharacter(await characters.list(), {
+      id,
+      name: form.name,
+      createdAt: now(),
+    });
+    if (typeof library === 'string') return c.json({ error: library }, 400);
+    const bytes = await form.image.file.arrayBuffer();
+    await characters.saveImage(id, { type: form.image.type, bytes });
+    await characters.save(library);
+    return characterList(c);
+  });
+
+  app.put('/api/admin/characters/:id', async (c) => {
+    const id = c.req.param('id');
+    const form = parseCharacterForm(await readForm(c), false);
+    if (typeof form === 'string') return c.json({ error: form }, 400);
+    const library = renameCharacter(await characters.list(), id, form.name);
+    if (!library) return c.json({ error: 'Character not found' }, 404);
+    if (form.image) {
+      const bytes = await form.image.file.arrayBuffer();
+      await characters.saveImage(id, { type: form.image.type, bytes });
+    }
+    await characters.save(library);
+    return characterList(c);
+  });
+
+  app.delete('/api/admin/characters/:id', async (c) => {
+    const id = c.req.param('id');
+    const library = removeCharacter(await characters.list(), id);
+    if (!library) return c.json({ error: 'Character not found' }, 404);
+    for (const record of await repository.list()) {
+      if (hasCharacter(record.event, id)) {
+        await repository.save(record.id, detachCharacter(record.event, id));
+      }
+    }
+    await characters.save(library);
+    await characters.removeImage(id);
+    return characterList(c);
+  });
+
+  app.get('/api/admin/characters/:id/image', async (c) => {
+    const image = await characters.loadImage(c.req.param('id'));
+    if (!image) return c.json({ error: 'Character not found' }, 404);
+    return imageResponse(c, image, 'no-store');
+  });
+
   /** Finds the event holding a link, counting misses against the client. */
   async function findLink(c: Context, token: string): Promise<EventRecord | 'blocked' | null> {
     const client = clientKey(c);
@@ -202,9 +309,21 @@ export function createApp({
     const record = await findLink(c, token);
     if (record === 'blocked') return c.json({ error: 'Too many attempts' }, 429);
     if (!record) return c.json({ error: 'Link not found' }, 404);
-    const result = lookupReveal(record.event, token);
+    const result = lookupReveal(record.event, token, characterIds(await characters.list()));
     if (result.status !== 'ok') return c.json({ error: 'Names not drawn yet' }, 409);
     return c.json(result.reveal);
+  });
+
+  app.get('/api/reveal/:token/cast/:characterId', async (c) => {
+    const characterId = c.req.param('characterId');
+    const record = await findLink(c, c.req.param('token'));
+    if (record === 'blocked') return c.json({ error: 'Too many attempts' }, 429);
+    const image =
+      record && hasCharacter(record.event, characterId)
+        ? await characters.loadImage(characterId)
+        : null;
+    if (!image) return c.json({ error: 'Not found' }, 404);
+    return imageResponse(c, image, 'private, max-age=300');
   });
 
   async function logVisit(c: Context, token: string, kind: VisitKind) {

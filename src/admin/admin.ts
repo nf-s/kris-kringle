@@ -10,6 +10,7 @@ import {
 import { ApiError, adminApi } from '../api';
 import { button, h } from '../dom';
 import { renderActivity } from './activity';
+import { createCharacterPanels } from './characters';
 import {
   conflictsWithDraw,
   exclusionsOf,
@@ -94,6 +95,13 @@ export function mountAdmin(root: HTMLElement): void {
   let message = '';
   let busy = false;
 
+  const characters = createCharacterPanels({
+    password: () => password,
+    run,
+    applyState,
+    render,
+  });
+
   document.title = 'Kris Kringle admin';
   document.body.className = 'admin-body';
 
@@ -102,6 +110,7 @@ export function mountAdmin(root: HTMLElement): void {
     state = null;
     events = [];
     storePassword('');
+    characters.reset();
     message = reason;
   }
 
@@ -158,6 +167,7 @@ export function mountAdmin(root: HTMLElement): void {
       events[0];
     if (!target) throw new Error('No events found');
     applyState(await adminApi.event(password, target.id));
+    await characters.load();
   }
 
   function confirmClearsDraw(current: AdminState): boolean {
@@ -562,8 +572,9 @@ export function mountAdmin(root: HTMLElement): void {
     if (message) page.append(h('p', { class: 'error', role: 'alert' }, message));
     page.append(renderEvents(current), renderSettings(current), renderPeople(current));
     if (current.people.length >= 2) page.append(renderExclusions(current));
-    page.append(renderDraw(current));
+    page.append(characters.renderEventCharacters(current), renderDraw(current));
     if (current.drawn) page.append(renderActivityPanel(current));
+    page.append(characters.renderLibrary());
     return page;
   }
 

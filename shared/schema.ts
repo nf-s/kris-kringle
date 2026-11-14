@@ -15,6 +15,47 @@ export const REVEAL_LABELS: Record<RevealKind, string> = {
 /** The event that existed before multiple events were supported. Its data is never moved. */
 export const MAIN_EVENT_ID = 'main';
 
+/**
+ * Every character is stored as one sprite sheet image: a row per pose, and in each row the body,
+ * the head and the parts that pass in front of the head, as three panels of the same size. The
+ * figure sits at the same place in every panel, so the layers line up without further data.
+ */
+export const characterPoseSchema = z.enum(['praying', 'wailing']);
+export type CharacterPose = z.infer<typeof characterPoseSchema>;
+export const CHARACTER_POSES: readonly CharacterPose[] = characterPoseSchema.options;
+export const characterLayerSchema = z.enum(['body', 'head', 'front']);
+export type CharacterLayer = z.infer<typeof characterLayerSchema>;
+export const CHARACTER_LAYERS: readonly CharacterLayer[] = characterLayerSchema.options;
+export const CHARACTER_SPRITE = {
+  panelWidth: 384,
+  panelHeight: 480,
+  /** Where the neck sits in every panel. The head tilts about this point. */
+  neckX: 192,
+  neckY: 192,
+  /** Bottom edge of the figure. */
+  baseline: 456,
+};
+export const characterImageTypeSchema = z.enum(['image/webp', 'image/png']);
+export type CharacterImageType = z.infer<typeof characterImageTypeSchema>;
+export const CHARACTER_IMAGE_TYPES: readonly CharacterImageType[] =
+  characterImageTypeSchema.options;
+/** A Durable Object value holds at most 2 MB. */
+export const MAX_CHARACTER_IMAGE_BYTES = 1_500_000;
+export const MAX_CHARACTERS = 200;
+export const MAX_EVENT_CHARACTERS = 40;
+
+export const characterNameSchema = z.string().trim().min(1).max(40);
+
+/** A character in the library shared by every event. Its image is fetched separately. */
+export const characterSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+});
+export type Character = z.infer<typeof characterSchema>;
+
+export const characterListSchema = z.object({ characters: z.array(characterSchema) });
+export type CharacterList = z.infer<typeof characterListSchema>;
+
 export const adminPersonSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -38,6 +79,8 @@ export const adminStateSchema = z.object({
   note: z.string(),
   drawn: z.boolean(),
   people: z.array(adminPersonSchema),
+  /** Ids of the library characters shown in this event's reveals, in display order. */
+  characterIds: z.array(z.string()).default([]),
 });
 export type AdminState = z.infer<typeof adminStateSchema>;
 
@@ -58,6 +101,8 @@ export const revealResponseSchema = z.object({
   giverName: z.string(),
   receiverName: z.string(),
   reveal: revealKindSchema,
+  /** Ids of the characters to show. Their images come from `/api/reveal/<link>/cast/<id>`. */
+  cast: z.array(z.string()).default([]),
 });
 export type RevealResponse = z.infer<typeof revealResponseSchema>;
 
@@ -89,3 +134,9 @@ export const exclusionsRequestSchema = z.object({
   exclusions: z.record(z.string(), z.array(z.string()).max(200)),
 });
 export type ExclusionsRequest = z.infer<typeof exclusionsRequestSchema>;
+
+/** The full list of characters attached to an event. */
+export const eventCharactersRequestSchema = z.object({
+  characterIds: z.array(z.string()).max(MAX_EVENT_CHARACTERS),
+});
+export type EventCharactersRequest = z.infer<typeof eventCharactersRequestSchema>;

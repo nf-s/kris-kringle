@@ -3,14 +3,17 @@ import { REVEAL_KINDS } from '../shared/schema';
 import {
   addPeople,
   createEmptyEvent,
+  detachCharacter,
   drawNames,
   firstNameSlug,
   isDrawn,
   lookupReveal,
   recordVisit,
   removePerson,
+  setCharacters,
   setExclusions,
   setReveal,
+  storedEventSchema,
   toAdminState,
   type StoredEvent,
 } from './event';
@@ -18,6 +21,7 @@ import { ADJECTIVES, NOUNS } from './words';
 
 const NAMES = ['Ada', 'Ben', 'Cleo', 'Dev', 'Esme', 'Finn', 'Gus'];
 const NO_TOKENS: ReadonlySet<string> = new Set();
+const NO_CHARACTERS: ReadonlySet<string> = new Set();
 
 function withPeople(names: readonly string[]): StoredEvent {
   return addPeople(createEmptyEvent(), names, NO_TOKENS);
@@ -176,11 +180,11 @@ describe('reveal links', () => {
   it('returns the receiver for a valid token once drawn', () => {
     const undrawn = withPeople(NAMES);
     const token = undrawn.people[0].token;
-    expect(lookupReveal(undrawn, token).status).toBe('not_drawn');
-    expect(lookupReveal(undrawn, 'missing').status).toBe('not_found');
+    expect(lookupReveal(undrawn, token, NO_CHARACTERS).status).toBe('not_drawn');
+    expect(lookupReveal(undrawn, 'missing', NO_CHARACTERS).status).toBe('not_found');
 
     const event = drawn(undrawn);
-    const result = lookupReveal(event, token);
+    const result = lookupReveal(event, token, NO_CHARACTERS);
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') return;
     expect(result.reveal.giverName).toBe('Ada');
@@ -228,5 +232,45 @@ describe('editing people', () => {
     const next = setReveal(event, event.people[0].id, 'globe');
     expect(next?.people[0].reveal).toBe('globe');
     expect(next ? isDrawn(next) : false).toBe(true);
+  });
+});
+
+describe('characters', () => {
+  const library = new Set(['c1', 'c2', 'c3']);
+
+  it('parses stored events saved before characters existed', () => {
+    const event = storedEventSchema.parse({ title: 'Family', note: '', people: [] });
+    expect(event.characterIds).toEqual([]);
+    expect(toAdminState('x', event).characterIds).toEqual([]);
+  });
+
+  it('attaches library characters in the given order', () => {
+    const event = setCharacters(withPeople(NAMES), ['c3', 'c1'], library);
+    expect(event?.characterIds).toEqual(['c3', 'c1']);
+    expect(event ? toAdminState('x', event).characterIds : []).toEqual(['c3', 'c1']);
+  });
+
+  it('rejects unknown and repeated characters', () => {
+    const event = withPeople(NAMES);
+    expect(setCharacters(event, ['missing'], library)).toBeNull();
+    expect(setCharacters(event, ['c1', 'c1'], library)).toBeNull();
+  });
+
+  it('attaching keeps the draw', () => {
+    const event = setCharacters(drawn(withPeople(NAMES)), ['c1'], library);
+    expect(event ? isDrawn(event) : false).toBe(true);
+  });
+
+  it('detaches a deleted character', () => {
+    const event = setCharacters(withPeople(NAMES), ['c1', 'c2'], library);
+    if (!event) throw new Error('setup');
+    expect(detachCharacter(event, 'c1').characterIds).toEqual(['c2']);
+  });
+
+  it('the cast leaves out characters no longer in the library', () => {
+    const event = setCharacters(drawn(withPeople(NAMES)), ['c1', 'c2'], library);
+    if (!event) throw new Error('setup');
+    const result = lookupReveal(event, event.people[0].token, new Set(['c2']));
+    expect(result.status === 'ok' ? result.reveal.cast : null).toEqual(['c2']);
   });
 });

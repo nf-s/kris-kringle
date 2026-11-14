@@ -530,6 +530,116 @@ td {
   display: none;
 }
 
+/* Characters */
+
+.character-import {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.character-import label.btn {
+  display: inline-block;
+  font-size: 14px;
+  color: var(--accent-strong);
+}
+
+.character-import label.btn:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.character-import__input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.character-list,
+.character-picks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.character-list {
+  display: grid;
+  width: 100%;
+}
+
+.character-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.character-row .inline-form {
+  max-width: 340px;
+}
+
+.character-row .inline-form input {
+  padding: 6px 10px;
+  font-size: 14px;
+}
+
+.character-thumb {
+  flex: none;
+  width: 48px;
+  height: 60px;
+  background: #f4f6f9;
+  border: 1px solid #e5e9ef;
+  border-radius: 7px;
+}
+
+.character-thumb.is-missing {
+  background: repeating-linear-gradient(135deg, #eef1f5 0 4px, #fff 4px 8px);
+}
+
+.character-picks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.character-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px 6px 8px;
+  font-size: 14px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.character-pick:hover {
+  background: #f4f6f9;
+}
+
+.character-pick:has(input:checked) {
+  border-color: var(--accent);
+}
+
+.character-pick input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.character-pick span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 640px) {
   .fields {
     grid-template-columns: 1fr;
@@ -571,13 +681,21 @@ td {
   font-size: 17px;
 }
 
-.reveal__canvas {
+.reveal__canvas,
+.reveal__cast {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
+}
+
+.reveal__canvas {
   touch-action: none;
   z-index: 3;
+}
+
+.reveal__cast {
+  pointer-events: none;
 }
 
 .reveal__header,

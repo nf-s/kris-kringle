@@ -11,12 +11,13 @@ import {
 } from '../shared/schema';
 import { ADJECTIVES, NOUNS } from './words';
 
-/** Older stored events have no `createdAt`; they sort first. */
+/** Older stored events have no `createdAt` (they sort first) and no `characterIds`. */
 export const storedEventSchema = z.object({
   title: z.string(),
   note: z.string(),
   createdAt: z.number().default(0),
   people: z.array(adminPersonSchema),
+  characterIds: z.array(z.string()).default([]),
 });
 export type StoredEvent = z.infer<typeof storedEventSchema>;
 type StoredPerson = StoredEvent['people'][number];
@@ -41,11 +42,11 @@ const MAX_VISITS_PER_PERSON = 500;
 const LOOP_ATTEMPTS = 2000;
 
 export function createEmptyEvent(): StoredEvent {
-  return { title: '', note: '', createdAt: 0, people: [] };
+  return { title: '', note: '', createdAt: 0, people: [], characterIds: [] };
 }
 
 export function createEvent(title: string, now: number): StoredEvent {
-  return { title, note: '', createdAt: now, people: [] };
+  return { title, note: '', createdAt: now, people: [], characterIds: [] };
 }
 
 /** Uniform integer in [0, max) from the platform CSPRNG. */
@@ -282,6 +283,28 @@ export function clearDraw(event: StoredEvent): StoredEvent {
   return { ...event, people: withoutDraw(event.people) };
 }
 
+/**
+ * Replaces the event's characters, keeping the given order. Returns null if an id is not in
+ * `libraryIds` or appears twice.
+ */
+export function setCharacters(
+  event: StoredEvent,
+  ids: readonly string[],
+  libraryIds: ReadonlySet<string>,
+): StoredEvent | null {
+  if (new Set(ids).size !== ids.length || ids.some((id) => !libraryIds.has(id))) return null;
+  return { ...event, characterIds: [...ids] };
+}
+
+/** Removes a deleted library character from the event. */
+export function detachCharacter(event: StoredEvent, id: string): StoredEvent {
+  return { ...event, characterIds: event.characterIds.filter((characterId) => characterId !== id) };
+}
+
+export function hasCharacter(event: StoredEvent, id: string): boolean {
+  return event.characterIds.includes(id);
+}
+
 /** Logs a link load or a finished reveal. Returns null if the link is unknown or not drawn yet. */
 export function recordVisit(
   event: StoredEvent,
@@ -313,6 +336,7 @@ export function toAdminState(id: string, event: StoredEvent): AdminState {
     note: event.note,
     drawn: isDrawn(event),
     people: event.people,
+    characterIds: event.characterIds,
   };
 }
 
@@ -331,7 +355,12 @@ export function findByToken(records: readonly EventRecord[], token: string): Eve
   );
 }
 
-export function lookupReveal(event: StoredEvent, token: string): RevealLookup {
+/** `libraryIds` holds every character still in the library; the cast leaves out any others. */
+export function lookupReveal(
+  event: StoredEvent,
+  token: string,
+  libraryIds: ReadonlySet<string>,
+): RevealLookup {
   const giver = event.people.find((person) => person.token === token);
   if (!giver) return { status: 'not_found' };
   const receiver = event.people.find((person) => person.id === giver.receiverId);
@@ -344,6 +373,7 @@ export function lookupReveal(event: StoredEvent, token: string): RevealLookup {
       giverName: giver.name,
       receiverName: receiver.name,
       reveal: giver.reveal,
+      cast: event.characterIds.filter((id) => libraryIds.has(id)),
     },
   };
 }

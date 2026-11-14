@@ -4,11 +4,11 @@ import {
   type RevealKind,
   type RevealResponse,
 } from '../../shared/schema';
-import { ApiError, fetchReveal, markOpened, markViewed } from '../api';
+import { ApiError, castImagePath, fetchReveal, markOpened, markViewed } from '../api';
 import { button, h } from '../dom';
 import { REVEAL_FACTORIES } from './registry';
 import { createSfx, type Sfx } from './sfx';
-import { createStage } from './stage';
+import { createStage, type StageCast } from './stage';
 
 /** A token source with `preview` set shows the real reveal without recording the visit. */
 export type RevealSource =
@@ -16,9 +16,18 @@ export type RevealSource =
 
 const CARD_DELAY_MS = 380;
 const LETTER_STAGGER_MS = 55;
+/** Space kept between the cast and the text above and below it. */
+const CAST_MARGIN = 6;
 
 function previewData(reveal: RevealKind): RevealResponse {
-  return { title: 'Preview', note: '', giverName: 'Preview', receiverName: 'Sample Name', reveal };
+  return {
+    title: 'Preview',
+    note: '',
+    giverName: 'Preview',
+    receiverName: 'Sample Name',
+    reveal,
+    cast: [],
+  };
 }
 
 function renderName(name: string): HTMLElement {
@@ -59,6 +68,12 @@ function start(
 ): void {
   const { sfx } = session;
   const canvas = h('canvas', { class: 'reveal__canvas' });
+  const header = h(
+    'header',
+    { class: 'reveal__header' },
+    h('p', { class: 'reveal__title' }, data.title || 'Kris Kringle'),
+    h('h1', {}, `Hi ${data.giverName}`),
+  );
   const hint = h('p', { class: 'reveal__hint', 'aria-live': 'polite' });
   const progressBar = h('div', { class: 'progress__bar' });
   const card = h(
@@ -93,27 +108,46 @@ function start(
     sound.textContent = session.muted ? 'Sound off' : 'Sound on';
   });
 
+  const footer = h(
+    'footer',
+    { class: 'reveal__footer' },
+    hint,
+    h('div', { class: 'progress' }, progressBar),
+  );
+  let cast: StageCast | undefined;
+  if (source.type === 'token' && data.cast.length > 0) {
+    const { token } = source;
+    cast = {
+      canvas: h('canvas', { class: 'reveal__cast' }),
+      images: data.cast.map((id) => castImagePath(token, id)),
+      band() {
+        const stage = canvas.getBoundingClientRect();
+        return {
+          top: header.getBoundingClientRect().bottom - stage.top + CAST_MARGIN,
+          bottom: footer.getBoundingClientRect().top - stage.top - CAST_MARGIN,
+        };
+      },
+    };
+  }
+
   const page = h(
     'main',
     { class: 'reveal' },
+    ...(cast ? [cast.canvas] : []),
     canvas,
-    h(
-      'header',
-      { class: 'reveal__header' },
-      h('p', { class: 'reveal__title' }, data.title || 'Kris Kringle'),
-      h('h1', {}, `Hi ${data.giverName}`),
-    ),
+    header,
     sound,
     ...(source.type === 'token' && source.preview
       ? [h('p', { class: 'reveal__badge' }, 'Preview: not recorded')]
       : []),
-    h('footer', { class: 'reveal__footer' }, hint, h('div', { class: 'progress' }, progressBar)),
+    footer,
     card,
   );
   root.replaceChildren(page);
 
   const stage = createStage({
     canvas,
+    cast,
     receiverName: data.receiverName,
     factory: REVEAL_FACTORIES[data.reveal],
     sfx,
