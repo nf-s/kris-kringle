@@ -23,8 +23,9 @@ export interface Placement {
 }
 
 /**
- * The characters gathered round the object. They pray until the person makes progress, break
- * into wailing one at a time as it rises, and all wail and jig about once the object opens.
+ * The characters gathered round the object. They pray, bobbing and rocking, until the person
+ * makes progress, break into wailing one at a time as it rises, and all wail and jig about once
+ * the object opens. Every bit of progress makes the whole cast jump.
  */
 export interface Cast {
   update(dt: number, progress: number, completed: boolean): void;
@@ -75,8 +76,24 @@ const OUTLINE_STAMPS = 12;
 /** The outline is redrawn when the figures change size on screen by more than this share. */
 const OUTLINE_TOLERANCE = 0.15;
 
-const HEAD_TILT: Record<CharacterPose, number> = { praying: 0.035, wailing: 0.052 };
+const HEAD_TILT: Record<CharacterPose, number> = { praying: 0.055, wailing: 0.075 };
 const HEAD_SPEED: Record<CharacterPose, number> = { praying: 1, wailing: 1.9 };
+/** Furthest the head may lean before the shear starts to distort the face. */
+const MAX_HEAD_TILT = 0.13;
+/** How fast the whole figure rocks from side to side, and how far, in radians. */
+const ROCK_SPEED: Record<CharacterPose, number> = { praying: 1.3, wailing: 3.1 };
+const ROCK: Record<CharacterPose, number> = { praying: 0.035, wailing: 0.05 };
+/**
+ * Figures this tall move by the shares of their height used below. Smaller figures move further
+ * for their size, up to `MAX_MOTION_BOOST` times, so the movement still shows on a phone.
+ */
+const FULL_MOTION_HEIGHT = 200;
+const MAX_MOTION_BOOST = 2;
+/** Share of the movement kept when the device asks for reduced motion. */
+const REDUCED_MOTION = 0.4;
+/** How strongly a rise in progress stirs the cast, and how quickly they settle again. */
+const STIR_GAIN = 20;
+const STIR_SETTLE = 2.2;
 
 interface Ring {
   rx: number;
@@ -226,7 +243,6 @@ function sway(time: number, phase: number): number {
   return Math.sin(time * 1.16 + phase) * 0.74 + Math.sin(time * 1.91 + phase * 0.73) * 0.26;
 }
 
-/** `images` are the characters' sprite sheets, in the order they stand round the ring. */
 function shuffled<T>(items: readonly T[]): T[] {
   const result = [...items];
   for (let i = result.length - 1; i > 0; i--) {
@@ -237,14 +253,17 @@ function shuffled<T>(items: readonly T[]): T[] {
 }
 
 /**
- * Each cast stands in its own random order and breaks into wailing in another, so the ring looks
- * different every time a reveal is started.
+ * `images` are the characters' sprite sheets. Each cast stands in its own random order and breaks
+ * into wailing in another, so the ring looks different every time a reveal is started.
  */
 export function createCast(images: readonly string[]): Cast {
   const still = window.matchMedia('(prefers-reduced-motion: reduce)');
   const count = images.length;
   let destroyed = false;
   let sinceComplete: number | null = null;
+  /** 0 to 1: how stirred up the cast is by recent progress. */
+  let stir = 0;
+  let lastProgress = 0;
   let placements: Placement[] = [];
   let placedFor = '';
 
@@ -299,16 +318,28 @@ export function createCast(images: readonly string[]): Cast {
     const pose: CharacterPose = member.wailing === flipped ? 'wailing' : 'praying';
     const stretch = moving ? switchStretch(member.sinceSwitch) : 0;
     const entrance = moving ? easeOutBack(member.shownFor / ENTRANCE_SECONDS) : 1;
-    const jig =
-      moving && sinceComplete !== null ? clamp(sinceComplete / JIG_RAMP_SECONDS, 0, 1) : 0;
-    const fretting = moving && pose === 'wailing' ? 1 : 0;
+    const jig = sinceComplete !== null ? clamp(sinceComplete / JIG_RAMP_SECONDS, 0, 1) : 0;
+    const wail = pose === 'wailing' ? 1 : 0;
+    const { phase } = member;
 
-    const tilt = moving ? HEAD_TILT[pose] * sway(time * HEAD_SPEED[pose], member.phase) : 0;
-    const breath = moving ? Math.sin(time * 1.3 + member.phase) * 0.006 : 0;
-    const shudder = fretting * Math.sin(time * 23 + member.phase * 3) * 0.006;
-    const bounce = fretting * Math.abs(Math.sin(time * 5 + member.phase)) * 0.02;
-    const hop = jig * Math.abs(Math.sin(time * 4.2 + member.phase)) * 0.07;
-    const lean = jig * Math.sin(time * 8.4 + member.phase * 2) * 0.09;
+    const boost = clamp(FULL_MOTION_HEIGHT / spot.height, 1, MAX_MOTION_BOOST);
+    const liveliness = moving ? 1 : REDUCED_MOTION;
+    /** Scales distances moved, as shares of the figure's height, and angles turned. */
+    const reach = liveliness * boost;
+    const swing = liveliness * Math.sqrt(boost);
+
+    const tilt = clamp(
+      HEAD_TILT[pose] * swing * sway(time * HEAD_SPEED[pose], phase),
+      -MAX_HEAD_TILT,
+      MAX_HEAD_TILT,
+    );
+    const bob = (1 - wail) * (0.5 - 0.5 * Math.cos(time * 2.6 + phase)) * 0.028;
+    const bounce = wail * Math.abs(Math.sin(time * 5 + phase)) * 0.035;
+    const jump = stir * Math.abs(Math.sin(time * 9 + phase * 1.7)) * 0.05;
+    const hop = jig * Math.abs(Math.sin(time * 4.2 + phase)) * 0.08;
+    const shudder = moving ? wail * Math.sin(time * 23 + phase * 3) * 0.006 : 0;
+    const rock = (1 - jig) * Math.sin(time * ROCK_SPEED[pose] + phase) * ROCK[pose];
+    const lean = jig * Math.sin(time * 8.4 + phase * 2) * 0.09;
 
     const size = spot.height / CHARACTER_SPRITE.panelHeight;
     if (Math.abs(size - member.outlinedAt) > member.outlinedAt * OUTLINE_TOLERANCE) {
@@ -318,10 +349,10 @@ export function createCast(images: readonly string[]): Cast {
     const scale = size * entrance;
     ctx.save();
     ctx.translate(
-      spot.x + shudder * spot.height,
-      spot.baseline - (breath + bounce + hop) * spot.height,
+      spot.x + shudder * reach * spot.height,
+      spot.baseline - (bob + bounce + jump + hop) * reach * spot.height,
     );
-    ctx.rotate(lean);
+    ctx.rotate((rock + lean) * swing);
     ctx.scale(scale * (1 - stretch * 0.6), scale * (1 + stretch));
     ctx.translate(-CHARACTER_SPRITE.neckX, -CHARACTER_SPRITE.baseline);
     if (member.outline) drawFigure(ctx, member.outline, pose, tilt, OUTLINE_SHEET_SCALE);
@@ -332,6 +363,9 @@ export function createCast(images: readonly string[]): Cast {
   return {
     update(dt, progress, completed) {
       if (completed) sinceComplete = (sinceComplete ?? 0) + dt;
+      const gained = Math.max(0, progress - lastProgress);
+      lastProgress = progress;
+      stir = Math.min(1, stir + gained * STIR_GAIN) * Math.exp(-dt * STIR_SETTLE);
       for (const member of members) {
         const calmAt = member.wailing ? member.breaksAt - CALM_MARGIN : member.breaksAt;
         const wailing = completed || progress >= calmAt;
