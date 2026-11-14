@@ -65,6 +65,7 @@ export function createStage(options: StageOptions): StageHandle {
   /** Only the first finger down is tracked; extra touches are ignored. */
   let activePointer: number | null = null;
   let pointerPosition: Point | null = null;
+  let characterPointer = false;
   let activitySinceFrame = false;
 
   function activity(): void {
@@ -161,13 +162,16 @@ export function createStage(options: StageOptions): StageHandle {
     if (activePointer !== null) return;
     activePointer = event.pointerId;
     pointerPosition = toPoint(event);
-    activity();
     canvas.setPointerCapture(event.pointerId);
+    characterPointer = !document.hidden && (cast?.toggleAt(pointerPosition) ?? false);
+    if (characterPointer || completedAt !== null) return;
+    activity();
     reveal.onPointerDown?.(pointerPosition);
   }
 
   function handleMove(event: PointerEvent): void {
     if (activePointer !== null && event.pointerId !== activePointer) return;
+    if (characterPointer || completedAt !== null) return;
     const point = toPoint(event);
     if (activePointer !== null) {
       if (pointerPosition && (point.x !== pointerPosition.x || point.y !== pointerPosition.y)) {
@@ -184,6 +188,11 @@ export function createStage(options: StageOptions): StageHandle {
     if (event.pointerId !== activePointer) return;
     activePointer = null;
     pointerPosition = null;
+    if (characterPointer) {
+      characterPointer = false;
+      return;
+    }
+    if (completedAt !== null) return;
     reveal.onPointerUp?.(toPoint(event));
   }
 

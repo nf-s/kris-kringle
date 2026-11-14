@@ -747,6 +747,12 @@ td {
   color: var(--accent);
 }
 
+.reveal__cast-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .progress {
   width: min(220px, 56vw);
   height: 8px;
@@ -805,10 +811,6 @@ td {
   transform: translateY(-8px);
 }
 
-.is-complete .reveal__canvas {
-  pointer-events: none;
-}
-
 /* ---------- Name card ---------- */
 
 .card {
@@ -848,6 +850,7 @@ td {
 
 .card__panel {
   position: relative;
+  pointer-events: auto;
   width: min(560px, 100%);
   padding: 34px 26px 30px;
   text-align: center;

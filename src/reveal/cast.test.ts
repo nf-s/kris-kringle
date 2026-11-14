@@ -185,14 +185,14 @@ describe('drawing sadness', () => {
 
     drawn.mockClear();
     cast.activity();
-    cast.update(4.01, 0, false);
+    cast.update(0.751, 0, false);
     cast.draw(ctx, phone([]), 20);
     expect(drawn).toHaveBeenCalled();
     expect(drawn.mock.calls.every((call) => call[2] === 'sad' && call[3] === 0)).toBe(true);
 
     drawn.mockClear();
     cast.activity();
-    cast.update(1, 0.8, false);
+    cast.update(0.1, 0.8, false);
     cast.draw(ctx, phone([]), 30);
     expect(drawn.mock.calls.every((call) => call[2] === 'wailing' && call[3] === 0)).toBe(true);
     cast.update(1, 1, true);
@@ -209,7 +209,7 @@ describe('drawing sadness', () => {
     const ctx = document.createElement('canvas').getContext('2d');
     if (!ctx) throw new Error('Test canvas is unavailable');
     cast.activity();
-    cast.update(4.45, 0.8, false);
+    cast.update(0.875, 0.8, false);
     cast.draw(ctx, phone([]), 10);
     expect(drawn.mock.calls.map((call) => call[2])).toEqual(['wailing', 'wailing', 'sad', 'sad']);
     expect(ctx.drawImage).toHaveBeenCalledTimes(1);
@@ -230,12 +230,83 @@ describe('drawing sadness', () => {
   });
 });
 
+describe('tapping characters', () => {
+  it('toggles only the frontmost visible figure under a comfortable hit area', async () => {
+    browser(true);
+    const drawn = vi.spyOn(sprite, 'drawFigure');
+    const cast = castModule.createCast(
+      Array.from({ length: 19 }, (_, index) => `/character-${index}.png`),
+    );
+    const area = phone([]);
+    const spots = placeCast(19, area).sort((a, b) => a.baseline - b.baseline);
+    const ctx = document.createElement('canvas').getContext('2d');
+    if (!ctx) throw new Error('Test canvas is unavailable');
+    cast.draw(ctx, area, 0);
+    expect(cast.toggleAt({ x: spots[0].x, y: spots[0].baseline - spots[0].height * 0.5 })).toBe(
+      false,
+    );
+    await Promise.resolve();
+    cast.update(1, 0, false);
+    cast.draw(ctx, area, 1);
+    let target: { x: number; y: number; front: number } | null = null;
+    for (let y = area.top; y < area.bottom && !target; y += 2) {
+      for (let x = 0; x < area.width; x += 2) {
+        const hits = spots.flatMap((spot, index) => {
+          const within =
+            Math.abs(x - spot.x) <= Math.max(22, spot.height * 0.25 + 6) &&
+            y >= spot.baseline - spot.height * 0.9 - 6 &&
+            y <= spot.baseline + 6;
+          return within ? [index] : [];
+        });
+        if (hits.length > 1) {
+          target = { x, y, front: hits[hits.length - 1] };
+          break;
+        }
+      }
+    }
+    if (!target) throw new Error('Expected overlapping figure hit areas');
+    expect(cast.toggleAt(target)).toBe(true);
+    drawn.mockClear();
+    cast.draw(ctx, area, 2);
+    const poses = drawn.mock.calls.filter((call) => call[4] === undefined).map((call) => call[2]);
+    expect(poses.filter((pose) => pose === 'sad')).toHaveLength(1);
+    expect(poses[target.front]).toBe('sad');
+    expect(cast.toggleAt(target)).toBe(true);
+    drawn.mockClear();
+    cast.draw(ctx, area, 3);
+    expect(drawn.mock.calls.every((call) => call[2] === 'praying')).toBe(true);
+    expect(cast.toggleAt({ x: -100, y: -100 })).toBe(false);
+    cast.destroy();
+    expect(cast.toggleAt(target)).toBe(false);
+  });
+
+  it('gives the foreground object priority over a figure behind it', async () => {
+    browser(true);
+    const cast = castModule.createCast(['/character.png']);
+    await Promise.resolve();
+    const ctx = document.createElement('canvas').getContext('2d');
+    if (!ctx) throw new Error('Test canvas is unavailable');
+    for (const round of [false, true]) {
+      const area = phone([{ x: 187, y: 340, halfWidth: 600, halfHeight: 600, round }]);
+      const spot = placeCast(1, area)[0];
+      cast.draw(ctx, area, 0);
+      expect(cast.toggleAt(face(spot))).toBe(false);
+    }
+    cast.destroy();
+  });
+});
+
 function interactiveStage() {
   const device = browser();
   const activity = vi.fn();
   const update = vi.fn();
+  const toggleAt = vi.fn(() => false);
+  const down = vi.fn();
+  const move = vi.fn();
+  const up = vi.fn();
   vi.spyOn(castModule, 'createCast').mockReturnValue({
     activity,
+    toggleAt,
     update,
     draw: vi.fn(),
     destroy: vi.fn(),
@@ -271,7 +342,14 @@ function interactiveStage() {
     onComplete: vi.fn(),
     factory(stage) {
       revealStage = stage;
-      return { footprint: () => [], update: vi.fn(), draw: vi.fn() };
+      return {
+        footprint: () => [],
+        update: vi.fn(),
+        draw: vi.fn(),
+        onPointerDown: down,
+        onPointerMove: move,
+        onPointerUp: up,
+      };
     },
   });
   return {
@@ -279,6 +357,10 @@ function interactiveStage() {
     canvas,
     activity,
     update,
+    toggleAt,
+    down,
+    move,
+    up,
     handle,
     stage(): Stage {
       if (!revealStage) throw new Error('Reveal was not created');
@@ -288,6 +370,26 @@ function interactiveStage() {
 }
 
 describe('stage activity for the cast', () => {
+  it('consumes a character tap and its whole pointer sequence without touching the task', () => {
+    const test = interactiveStage();
+    test.toggleAt.mockReturnValue(true);
+    test.canvas.dispatchEvent(new TestPointer('pointerdown', 1, 10, 10));
+    test.canvas.dispatchEvent(new TestPointer('pointermove', 1, 100, 100));
+    test.canvas.dispatchEvent(new TestPointer('pointerdown', 2, 50, 50));
+    test.canvas.dispatchEvent(new TestPointer('pointermove', 2, 60, 60));
+    test.canvas.dispatchEvent(new TestPointer('pointerup', 1, 100, 100));
+    expect(test.toggleAt).toHaveBeenCalledTimes(1);
+    expect(test.activity).not.toHaveBeenCalled();
+    expect(test.down).not.toHaveBeenCalled();
+    expect(test.move).not.toHaveBeenCalled();
+    expect(test.up).not.toHaveBeenCalled();
+    test.toggleAt.mockReturnValue(false);
+    test.canvas.dispatchEvent(new TestPointer('pointerdown', 3, 20, 20));
+    expect(test.activity).toHaveBeenCalledTimes(1);
+    expect(test.down).toHaveBeenCalledTimes(1);
+    test.handle.destroy();
+  });
+
   it('counts a press, held movement and progress increases but ignores hover and no-op input', () => {
     const test = interactiveStage();
     test.canvas.dispatchEvent(new TestPointer('pointermove', 1, 10, 10));
@@ -349,6 +451,14 @@ describe('stage activity for the cast', () => {
     test.canvas.dispatchEvent(new TestPointer('pointermove', 1, 20, 10));
     test.stage().setProgress(0.8);
     test.stage().setProgress(0.9);
+    expect(test.activity).not.toHaveBeenCalled();
+    expect(test.down).not.toHaveBeenCalled();
+    expect(test.move).not.toHaveBeenCalled();
+    test.canvas.dispatchEvent(new TestPointer('pointerup', 1, 20, 10));
+    expect(test.up).not.toHaveBeenCalled();
+    test.toggleAt.mockReturnValue(true);
+    test.canvas.dispatchEvent(new TestPointer('pointerdown', 2, 30, 10));
+    expect(test.toggleAt).toHaveBeenLastCalledWith({ x: 30, y: 10 });
     expect(test.activity).not.toHaveBeenCalled();
     test.handle.destroy();
     test.canvas.dispatchEvent(new TestPointer('pointermove', 1, 30, 10));

@@ -124,6 +124,9 @@ function start(
     { class: 'reveal__footer' },
     hint,
     h('div', { class: 'progress' }, progressBar),
+    ...(data.cast.length > 0
+      ? [h('p', { class: 'reveal__cast-hint' }, 'Tap a character to change their mood')]
+      : []),
   );
   let cast: StageCast | undefined;
   if (source.type === 'token' && data.cast.length > 0) {

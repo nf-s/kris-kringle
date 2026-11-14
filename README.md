@@ -24,12 +24,17 @@ Characters live in one library shared by every event. The admin imports them fro
 character's image. Each event has its own ordered list of attached characters, saved separately
 from the draw. Deleting a character removes it from every event.
 
-On a reveal page the event's characters kneel in a ring round the object, praying. As the person
-works through the task they switch to wailing one at a time, and they all jig once the name is
-out. After four seconds without activity, they become comically sad one at a time, two seconds
-apart. Touching or moving the object restores the pose for the current progress. This starts
-only after the first interaction, pauses while the tab is hidden, and stops once the reveal is
-complete. Reduced motion keeps the state changes but removes the animated transitions.
+On a reveal page the event's characters kneel in a ring round the object, praying. They switch
+to wailing one at a time as task progress increases: the first at 8%, the last at 90%. They all
+jig once the name is out.
+
+After 0.75 seconds without task
+activity, characters become sad in a fresh random order, with uneven 0.15–0.45 second gaps and
+0.25 second fades. Tapping a visible figure toggles just that figure between sad and the happy
+pose for current progress, until actual task activity resets the group. The object takes touch
+priority. Automatic sadness starts only after task activity, pauses while the tab is hidden,
+and stops once the reveal is complete. Visible characters remain tappable after completion.
+Reduced motion keeps state changes without animated transitions.
 
 They stand behind the object, so each reveal reports the space its object takes up
 (`footprint`) and nobody is placed where it would cover their face; on a narrow screen the ring
@@ -72,13 +77,13 @@ The Worker reads the password from the `ADMIN_PASSWORD` secret.
 
 ## Commands
 
-| Command             | Purpose                                             |
-| ------------------- | --------------------------------------------------- |
-| `npm run dev`       | Local dev server (Vite + workerd)                   |
-| `npm test`          | Unit tests: draw, API, phone motion, cast placement |
-| `npm run typecheck` | TypeScript, front end and Worker                    |
-| `npm run format`    | Prettier                                            |
-| `npm run deploy`    | Build and deploy to Cloudflare                      |
+| Command             | Purpose                                                                      |
+| ------------------- | ---------------------------------------------------------------------------- |
+| `npm run dev`       | Local dev server (Vite + workerd)                                            |
+| `npm test`          | Unit tests: draw, API, phone motion, cast state and placement, sprite import |
+| `npm run typecheck` | TypeScript, front end and Worker                                             |
+| `npm run format`    | Prettier                                                                     |
+| `npm run deploy`    | Build and deploy to Cloudflare                                               |
 
 ## Layout
 
@@ -89,7 +94,8 @@ The Worker reads the password from the `ADMIN_PASSWORD` secret.
 - `src/admin/` — admin page. `exclusions.ts` is the exclusion grid, `activity.ts` the chart,
   `characters.ts` the character library and each event's character picker.
 - `src/reveal/` — reveal page. `stage.ts` runs the canvas loop, `kinds/` has one file per reveal,
-  `cast.ts` places and animates the characters, `motion.ts` reads the phone's own movement,
+  `cast.ts` places and animates the characters, `cast-state.ts` controls pose and idle state,
+  `motion.ts` reads the phone's own movement,
   `draw.ts` has the shared drawing helpers including the ink outline every object is drawn with.
 - `src/characters/` — `import.ts` builds a character's sprite sheet in the browser from the
   imported artwork, `sprite.ts` draws one. A sheet is three rows (praying, wailing, sad) of three

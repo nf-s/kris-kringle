@@ -13,7 +13,7 @@ import {
 } from '../characters/sprite';
 import { SWITCH_SECONDS, createCastState } from './cast-state';
 import { clamp, easeOutBack, lerp } from './draw';
-import type { Shape } from './engine';
+import type { Point, Shape } from './engine';
 
 /** The stage, the band of it the cast may stand in, and the object in the middle, in CSS pixels. */
 export interface CastArea {
@@ -39,6 +39,8 @@ export interface Placement {
  */
 export interface Cast {
   activity(): void;
+  /** Toggles the frontmost character at a point, leaving touches on the object to the task. */
+  toggleAt(point: Point): boolean;
   /** `idleDt` counts only time while the page is visible. */
   update(dt: number, progress: number, completed: boolean, idleDt?: number): void;
   draw(ctx: CanvasRenderingContext2D, area: CastArea, time: number): void;
@@ -299,6 +301,7 @@ export function createCast(images: readonly string[]): Cast {
   let destroyed = false;
   let sinceComplete: number | null = null;
   let placements: Placement[] = [];
+  let footprint: readonly Shape[] = [];
   let placedFor = '';
 
   const ranks = shuffled(images.map((_, index) => index));
@@ -339,6 +342,7 @@ export function createCast(images: readonly string[]): Cast {
   let drawOrder: number[] = [];
 
   function place(area: CastArea): void {
+    footprint = area.object;
     const object = area.object
       .map((shape) => `${shape.x},${shape.y},${shape.halfWidth},${shape.halfHeight},${shape.round}`)
       .join(';');
@@ -367,7 +371,9 @@ export function createCast(images: readonly string[]): Cast {
     const stretch = moving ? switchStretch(mood.sinceSwitch) * (1 - sadWeight) : 0;
     const entrance = moving ? easeOutBack(member.shownFor / ENTRANCE_SECONDS) : 1;
     const jig =
-      moving && sinceComplete !== null ? clamp(sinceComplete / JIG_RAMP_SECONDS, 0, 1) : 0;
+      moving && sinceComplete !== null
+        ? clamp(sinceComplete / JIG_RAMP_SECONDS, 0, 1) * (1 - sadWeight)
+        : 0;
     const fretting = moving && pose === 'wailing' ? 1 - sadWeight : 0;
 
     const tilt = moving
@@ -426,6 +432,32 @@ export function createCast(images: readonly string[]): Cast {
 
   return {
     activity: state.activity,
+    toggleAt(point) {
+      // Leave a small touch margin around the foreground object and its moving handles.
+      const padding = 6;
+      if (
+        footprint.some((shape) =>
+          covers(shape, point.x - padding, point.y - padding, point.x + padding, point.y + padding),
+        )
+      ) {
+        return false;
+      }
+      for (let order = drawOrder.length - 1; order >= 0; order--) {
+        const index = drawOrder[order];
+        if (!members[index].image) continue;
+        const spot = placements[index];
+        const halfWidth = Math.max(22, (spot.height * FIGURE_WIDTH) / 2 + padding);
+        const top = spot.baseline - spot.height * FACE.top - padding;
+        if (
+          Math.abs(point.x - spot.x) <= halfWidth &&
+          point.y >= top &&
+          point.y <= spot.baseline + padding
+        ) {
+          return state.toggle(index);
+        }
+      }
+      return false;
+    },
     update(dt, progress, completed, idleDt = dt) {
       state.update(dt, progress, completed, idleDt);
       if (completed) sinceComplete = (sinceComplete ?? 0) + dt;
