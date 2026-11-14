@@ -1,10 +1,12 @@
 import {
   GOLD_GLOW_RGB,
+  OUTLINE_WEIGHT,
   PALETTE,
   Spring,
   clamp,
   easeOutCubic,
   glow,
+  inkOutline,
   rand,
   softShadow,
   sparkle,
@@ -31,6 +33,8 @@ interface Layout {
   ry: number;
   /** Where the egg rests, used for the contact shadow while it hops. */
   floorY: number;
+  /** Pixels per drawing unit. */
+  scale: number;
 }
 
 const SPECKLES: readonly { x: number; y: number; r: number; spin: number }[] = [
@@ -138,6 +142,7 @@ export const createEgg: RevealFactory = (stage) => {
       rx,
       ry,
       floorY: restY + ry * 1.02,
+      scale,
     };
   }
 
@@ -346,6 +351,21 @@ export const createEgg: RevealFactory = (stage) => {
     }
   }
 
+  /** Ink round a shell `width` by `height` pixels across its half-axes, centred on the origin. */
+  function outlineShell(
+    ctx: CanvasRenderingContext2D,
+    l: Layout,
+    width: number,
+    height: number,
+  ): void {
+    inkOutline(ctx, OUTLINE_WEIGHT * l.scale, () => {
+      ctx.save();
+      ctx.scale(width, height);
+      eggPath(ctx);
+      ctx.restore();
+    });
+  }
+
   function drawWhole(ctx: CanvasRenderingContext2D, l: Layout): void {
     const bob = Math.sin(stage.time * 1.7) * 3;
     softShadow(ctx, l.cx, l.floorY, l.rx * 1.15, l.rx * 0.2);
@@ -353,8 +373,11 @@ export const createEgg: RevealFactory = (stage) => {
     ctx.translate(l.cx, l.cy + l.ry + bob);
     ctx.rotate(tilt.value * 0.12);
     ctx.translate(0, -l.ry);
+    const width = l.rx * (1 + squash.value * 0.1);
+    const height = l.ry * (1 - squash.value * 0.1);
+    outlineShell(ctx, l, width, height);
     ctx.save();
-    ctx.scale(l.rx * (1 + squash.value * 0.1), l.ry * (1 - squash.value * 0.1));
+    ctx.scale(width, height);
     drawShell(ctx);
     ctx.restore();
     drawFace(ctx, l);
@@ -385,6 +408,9 @@ export const createEgg: RevealFactory = (stage) => {
       }
       ctx.scale(l.rx, l.ry);
       clipHalf(ctx, top);
+      ctx.scale(1 / l.rx, 1 / l.ry);
+      outlineShell(ctx, l, l.rx, l.ry);
+      ctx.scale(l.rx, l.ry);
       drawShell(ctx);
       ctx.restore();
     }

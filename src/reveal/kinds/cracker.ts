@@ -1,4 +1,15 @@
-import { PALETTE, Spring, clamp, glow, lerp, rand, softShadow, sparkle } from '../draw';
+import {
+  OUTLINE_WEIGHT,
+  PALETTE,
+  Spring,
+  clamp,
+  glow,
+  inkOutline,
+  lerp,
+  rand,
+  softShadow,
+  sparkle,
+} from '../draw';
 import type { Point, RevealFactory } from '../engine';
 
 const COMPLETE_DELAY = 0.35;
@@ -136,15 +147,19 @@ function gloss(
   ctx.restore();
 }
 
+function barrelPath(ctx: CanvasRenderingContext2D, shift: number): void {
+  roundedRect(ctx, shift - BARREL_HALF, -BARREL_RADIUS, BARREL_HALF * 2, BARREL_RADIUS * 2, 10);
+}
+
 function drawBarrel(ctx: CanvasRenderingContext2D, shift: number, glintX: number): void {
   const left = shift - BARREL_HALF;
   const r = BARREL_RADIUS;
-  roundedRect(ctx, left, -r, BARREL_HALF * 2, r * 2, 10);
+  barrelPath(ctx, shift);
   ctx.fillStyle = foil(ctx, r, PALETTE.white, PALETTE.cream, PALETTE.creamShade);
   ctx.fill();
 
   ctx.save();
-  roundedRect(ctx, left, -r, BARREL_HALF * 2, r * 2, 10);
+  barrelPath(ctx, shift);
   ctx.clip();
   for (const side of [-1, 1]) {
     ctx.fillStyle = PALETTE.red;
@@ -285,6 +300,25 @@ function drawTear(ctx: CanvasRenderingContext2D, x: number, radius: number, dama
   ctx.stroke();
 }
 
+/** Radius of the neck at its tie. It thins as the neck is stretched and as it tears. */
+function neckRadius(from: number, to: number, damage: number): number {
+  const rest = END_INNER - NECK_START;
+  return NECK_RADIUS * Math.sqrt(rest / Math.max(rest, to - from)) * (1 - 0.35 * damage);
+}
+
+function neckPath(ctx: CanvasRenderingContext2D, from: number, to: number, radius: number): void {
+  ctx.beginPath();
+  ctx.moveTo(from, -SHOULDER_RADIUS);
+  neckEdge(ctx, from, to, -SHOULDER_RADIUS, -radius, -END_INNER_RADIUS);
+  ctx.lineTo(to, END_INNER_RADIUS);
+  neckEdge(ctx, to, from, END_INNER_RADIUS, radius, SHOULDER_RADIUS);
+  ctx.closePath();
+}
+
+function tiePath(ctx: CanvasRenderingContext2D, middle: number, radius: number): void {
+  roundedRect(ctx, middle - 4.5, -radius - 3, 9, radius * 2 + 6, 3);
+}
+
 /** Pinched, pleated neck and its gold tie, in mirrored coordinates. `damage` is 0 to 1. */
 function drawNeck(
   ctx: CanvasRenderingContext2D,
@@ -293,22 +327,13 @@ function drawNeck(
   glintX: number,
   damage: number,
 ): void {
-  const rest = END_INNER - NECK_START;
-  const radius = NECK_RADIUS * Math.sqrt(rest / Math.max(rest, to - from)) * (1 - 0.35 * damage);
+  const radius = neckRadius(from, to, damage);
   const middle = (from + to) / 2;
-  const outline = (): void => {
-    ctx.beginPath();
-    ctx.moveTo(from, -SHOULDER_RADIUS);
-    neckEdge(ctx, from, to, -SHOULDER_RADIUS, -radius, -END_INNER_RADIUS);
-    ctx.lineTo(to, END_INNER_RADIUS);
-    neckEdge(ctx, to, from, END_INNER_RADIUS, radius, SHOULDER_RADIUS);
-    ctx.closePath();
-  };
-  outline();
+  neckPath(ctx, from, to, radius);
   ctx.fillStyle = foil(ctx, SHOULDER_RADIUS, PALETTE.redLight, PALETTE.red, PALETTE.redDeep);
   ctx.fill();
   ctx.save();
-  outline();
+  neckPath(ctx, from, to, radius);
   ctx.clip();
   gloss(ctx, from, to, SHOULDER_RADIUS, glintX);
   ctx.restore();
@@ -322,7 +347,7 @@ function drawNeck(
     ctx.stroke();
   }
 
-  roundedRect(ctx, middle - 4.5, -radius - 3, 9, radius * 2 + 6, 3);
+  tiePath(ctx, middle, radius);
   ctx.fillStyle = foil(ctx, radius + 3, PALETTE.goldPale, PALETTE.gold, PALETTE.goldDeep);
   ctx.fill();
   ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
@@ -330,7 +355,7 @@ function drawNeck(
 
   if (damage <= 0.01) return;
   ctx.save();
-  outline();
+  neckPath(ctx, from, to, radius);
   ctx.clip();
   drawTear(ctx, middle + 7, radius, damage);
   ctx.restore();
@@ -590,6 +615,26 @@ export const createCracker: RevealFactory = (stage) => {
     ctx.restore();
   }
 
+  /** Ink round what `drawSide` draws with the same arguments. */
+  function outlineSide(ctx: CanvasRenderingContext2D, side: number, withNeck: boolean): void {
+    const stretch = Math.max(0, stretchOf(side).value);
+    ctx.save();
+    ctx.scale(side, 1);
+    if (withNeck) {
+      const from = NECK_START + side * barrelShift();
+      const to = END_INNER + stretch;
+      const radius = neckRadius(from, to, clamp(damageOf(side).amount, 0, 1));
+      inkOutline(ctx, OUTLINE_WEIGHT, () => neckPath(ctx, from, to, radius));
+      inkOutline(ctx, OUTLINE_WEIGHT, () => tiePath(ctx, (from + to) / 2, radius));
+    }
+    inkOutline(ctx, OUTLINE_WEIGHT, () => endPath(ctx, END_INNER + stretch, END_OUTER + stretch));
+    ctx.restore();
+  }
+
+  function outlineBarrel(ctx: CanvasRenderingContext2D): void {
+    inkOutline(ctx, OUTLINE_WEIGHT, () => barrelPath(ctx, barrelShift()));
+  }
+
   /** Runs `paint` in design units, rotated about `pivotX` on the cracker's axis. */
   function withPiece(
     ctx: CanvasRenderingContext2D,
@@ -632,6 +677,9 @@ export const createCracker: RevealFactory = (stage) => {
     );
     const offset = { x: -Math.sin(a) * tremble, y: Math.cos(a) * tremble + bob };
     withPiece(ctx, l, a, 0, offset, 0, 1, () => {
+      outlineSide(ctx, -1, true);
+      outlineSide(ctx, 1, true);
+      outlineBarrel(ctx);
       drawSide(ctx, -1, glintX, true);
       drawSide(ctx, 1, glintX, true);
       drawBarrel(ctx, barrelShift(), glintX);
@@ -663,9 +711,12 @@ export const createCracker: RevealFactory = (stage) => {
     };
     const endPivot = s.side * ((END_INNER + END_OUTER) / 2 + stretchOf(s.side).value);
     withPiece(ctx, l, s.angle, endPivot, endOffset, s.side * 7 * elapsed, alpha, () => {
+      outlineSide(ctx, s.side, false);
       drawSide(ctx, s.side, 9999, false);
     });
     withPiece(ctx, l, s.angle, -s.side * 45, bodyOffset, -s.side * 3.5 * elapsed, alpha, () => {
+      outlineSide(ctx, -s.side, true);
+      outlineBarrel(ctx);
       drawSide(ctx, -s.side, 9999, true);
       drawBarrel(ctx, barrelShift(), 9999);
     });

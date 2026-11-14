@@ -1,11 +1,13 @@
 import {
   GOLD_GLOW_RGB,
+  OUTLINE_WEIGHT,
   PALETTE,
   Spring,
   clamp,
   easeInCubic,
   easeOutCubic,
   glow,
+  inkOutline,
   lerp,
   rand,
   softShadow,
@@ -171,6 +173,93 @@ function strokeRibbon(
   }
 }
 
+function bodyPath(ctx: CanvasRenderingContext2D): void {
+  roundedRect(ctx, -BODY.halfWidth, -BODY.height, BODY.halfWidth * 2, BODY.height, 14);
+}
+
+function lidPath(ctx: CanvasRenderingContext2D): void {
+  roundedRect(ctx, -LID.halfWidth, LID.top, LID.halfWidth * 2, LID.height, 11);
+}
+
+/** One loop of the bow, from the knot round and back. Add it to a path that has been begun. */
+function bowLoop(ctx: CanvasRenderingContext2D): void {
+  ctx.moveTo(0, 0);
+  ctx.bezierCurveTo(18, -48, 76, -54, 72, -16);
+  ctx.bezierCurveTo(70, 10, 24, 10, 0, 0);
+}
+
+/** Ink round a ribbon drawn by `strokeRibbon` with the same points and width. */
+function outlineRibbon(
+  ctx: CanvasRenderingContext2D,
+  from: Point,
+  control: Point,
+  to: Point,
+  width: number,
+  weight: number,
+): void {
+  inkOutline(
+    ctx,
+    weight,
+    () => {
+      ctx.beginPath();
+      ctx.moveTo(from.x, from.y);
+      ctx.quadraticCurveTo(control.x, control.y, to.x, to.y);
+    },
+    width,
+  );
+}
+
+/** Ink round the bow drawn by `drawBow` with the same arguments. */
+function outlineBow(
+  ctx: CanvasRenderingContext2D,
+  scaleX: number,
+  scaleY: number,
+  droop: number,
+): void {
+  inkOutline(ctx, OUTLINE_WEIGHT, () => {
+    ctx.beginPath();
+    for (const side of [-1, 1]) {
+      ctx.save();
+      ctx.scale(side, 1);
+      ctx.rotate(droop);
+      ctx.scale(scaleX, scaleY);
+      bowLoop(ctx);
+      ctx.restore();
+    }
+  });
+  inkOutline(ctx, OUTLINE_WEIGHT, () => roundedRect(ctx, -14, -13, 28, 26, 9));
+}
+
+/** Ink round the tassel drawn by `drawTassel` at the same place. */
+function outlineTassel(
+  ctx: CanvasRenderingContext2D,
+  end: Point,
+  angle: number,
+  scale: number,
+): void {
+  ctx.save();
+  ctx.translate(end.x, end.y);
+  ctx.scale(scale, scale);
+  ctx.rotate(angle - Math.PI / 2);
+  inkOutline(
+    ctx,
+    OUTLINE_WEIGHT,
+    () => {
+      ctx.beginPath();
+      for (let strand = -2; strand <= 2; strand++) {
+        ctx.moveTo(strand * 1.5, 6);
+        ctx.lineTo(strand * 4.5, 27 - Math.abs(strand) * 1.5);
+      }
+    },
+    3.2,
+  );
+  inkOutline(ctx, OUTLINE_WEIGHT, () => {
+    ctx.beginPath();
+    ctx.arc(0, 0, 10.5, 0, Math.PI * 2);
+  });
+  ctx.restore();
+}
+
 function drawBand(ctx: CanvasRenderingContext2D, top: number, height: number): void {
   ctx.fillStyle = satinGradient(ctx, { x: -17, y: 0 }, { x: 17, y: 0 });
   ctx.fillRect(-17, top, 34, height);
@@ -180,12 +269,12 @@ function drawBand(ctx: CanvasRenderingContext2D, top: number, height: number): v
 
 function drawBody(ctx: CanvasRenderingContext2D, open: boolean): void {
   const { halfWidth, height } = BODY;
-  roundedRect(ctx, -halfWidth, -height, halfWidth * 2, height, 14);
+  bodyPath(ctx);
   ctx.fillStyle = wrapGradient(ctx, halfWidth, PALETTE.redLight);
   ctx.fill();
 
   ctx.save();
-  roundedRect(ctx, -halfWidth, -height, halfWidth * 2, height, 14);
+  bodyPath(ctx);
   ctx.clip();
   ctx.fillStyle = PALETTE.goldPale;
   for (let row = 0; row < 6; row++) {
@@ -234,11 +323,11 @@ function drawBody(ctx: CanvasRenderingContext2D, open: boolean): void {
 
 function drawLid(ctx: CanvasRenderingContext2D): void {
   const { halfWidth, top, height } = LID;
-  roundedRect(ctx, -halfWidth, top, halfWidth * 2, height, 11);
+  lidPath(ctx);
   ctx.fillStyle = wrapGradient(ctx, halfWidth, '#f57686');
   ctx.fill();
   ctx.save();
-  roundedRect(ctx, -halfWidth, top, halfWidth * 2, height, 11);
+  lidPath(ctx);
   ctx.clip();
   drawBand(ctx, top, height);
   const lip = ctx.createLinearGradient(0, top + height - 12, 0, top + height);
@@ -265,9 +354,7 @@ function drawBow(
     ctx.rotate(droop);
     ctx.scale(scaleX, scaleY);
     ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.bezierCurveTo(18, -48, 76, -54, 72, -16);
-    ctx.bezierCurveTo(70, 10, 24, 10, 0, 0);
+    bowLoop(ctx);
     const satin = ctx.createRadialGradient(34, -34, 2, 38, -22, 52);
     satin.addColorStop(0, '#fff3c4');
     satin.addColorStop(0.35, PALETTE.goldPale);
@@ -712,13 +799,22 @@ export const createPresent: RevealFactory = (stage) => {
     if (!g.moved && stage.time - g.startedAt < TAP_TIME) tapBox(g.part, layout());
   }
 
-  function drawTail(ctx: CanvasRenderingContext2D, l: Layout, knot: Point, end: Point): void {
+  /** Where the long tail of the ribbon bends between the knot and its end. */
+  function tailControl(l: Layout, knot: Point, end: Point): Point {
     const slack = 1 - tension;
-    const control = {
+    return {
       x: (knot.x + end.x) / 2 + TAIL_DROOP.x * l.scale * slack,
       y: (knot.y + end.y) / 2 + TAIL_DROOP.y * l.scale * slack,
     };
-    strokeRibbon(ctx, knot, control, end, lerp(15, 8, tension) * l.scale);
+  }
+
+  function tailWidth(l: Layout): number {
+    return lerp(15, 8, tension) * l.scale;
+  }
+
+  function drawTail(ctx: CanvasRenderingContext2D, l: Layout, knot: Point, end: Point): void {
+    const control = tailControl(l, knot, end);
+    strokeRibbon(ctx, knot, control, end, tailWidth(l));
     const held = grab !== null && grab.kind === 'ribbon';
     const idle = !held && tension < 0.05;
     const strong = idle && nudging();
@@ -738,22 +834,38 @@ export const createPresent: RevealFactory = (stage) => {
       20 * l.scale,
       0.28 * (1 - 0.5 * lift),
     );
+    const knot = knotPoint(l, p);
+    const end = tailEnd(l);
+    const loop = bowLoose.value * (1 - 0.3 * tension);
+    const spring = clamp(boing.value, -0.4, 0.4);
+    const droop = (1 - bowLoose.value) * 0.9;
+
+    ctx.save();
+    applyPose(ctx, l, p);
+    inkOutline(ctx, OUTLINE_WEIGHT, () => bodyPath(ctx));
+    ctx.translate(0, lidLift.value);
+    inkOutline(ctx, OUTLINE_WEIGHT, () => lidPath(ctx));
+    ctx.restore();
+
     ctx.save();
     applyPose(ctx, l, p);
     drawBody(ctx, false);
     ctx.translate(0, lidLift.value);
     drawLid(ctx);
+    outlineRibbon(ctx, SHORT_TAIL[0], SHORT_TAIL[1], SHORT_TAIL[2], 15, OUTLINE_WEIGHT);
     strokeRibbon(ctx, SHORT_TAIL[0], SHORT_TAIL[1], SHORT_TAIL[2], 15);
     ctx.restore();
 
-    drawTail(ctx, l, knotPoint(l, p), tailEnd(l));
+    const control = tailControl(l, knot, end);
+    outlineRibbon(ctx, knot, control, end, tailWidth(l), OUTLINE_WEIGHT * l.scale);
+    outlineTassel(ctx, end, Math.atan2(end.y - control.y, end.x - control.x), l.scale);
+    drawTail(ctx, l, knot, end);
 
     ctx.save();
     applyPose(ctx, l, p);
     ctx.translate(0, KNOT_Y + lidLift.value);
-    const loop = bowLoose.value * (1 - 0.3 * tension);
-    const spring = clamp(boing.value, -0.4, 0.4);
-    drawBow(ctx, loop * (1 + spring), loop * (1 - spring), (1 - bowLoose.value) * 0.9);
+    outlineBow(ctx, loop * (1 + spring), loop * (1 - spring), droop);
+    drawBow(ctx, loop * (1 + spring), loop * (1 - spring), droop);
     ctx.restore();
   }
 
@@ -779,6 +891,7 @@ export const createPresent: RevealFactory = (stage) => {
       ctx.globalAlpha = 1 - drop;
       ctx.translate(x, floorY + drop * stage.height * 0.5);
       ctx.scale(s, s);
+      inkOutline(ctx, OUTLINE_WEIGHT, () => bodyPath(ctx));
       drawBody(ctx, true);
       ctx.restore();
     }
@@ -794,6 +907,7 @@ export const createPresent: RevealFactory = (stage) => {
       ctx.rotate(o.lidSide * elapsed * 4.2);
       ctx.scale(s, s);
       ctx.translate(0, -LID_CENTRE_Y);
+      inkOutline(ctx, OUTLINE_WEIGHT, () => lidPath(ctx));
       drawLid(ctx);
       ctx.restore();
     }
@@ -814,8 +928,11 @@ export const createPresent: RevealFactory = (stage) => {
       };
       ctx.save();
       ctx.globalAlpha = whipAlpha;
+      const whipAngle = Math.atan2(o.direction.y, o.direction.x);
+      outlineRibbon(ctx, from, control, to, 9 * s, OUTLINE_WEIGHT * s);
+      outlineTassel(ctx, to, whipAngle, s);
       strokeRibbon(ctx, from, control, to, 9 * s);
-      drawTassel(ctx, to, Math.atan2(o.direction.y, o.direction.x), s, 0, false);
+      drawTassel(ctx, to, whipAngle, s, 0, false);
       ctx.restore();
     }
   }

@@ -153,3 +153,35 @@ export function glow(
   ctx.arc(x, y, radius, 0, Math.PI * 2);
   ctx.fill();
 }
+
+/** Ink for the outline drawn round an object. */
+export const INK = '#2b2233';
+/** Weight of that outline in a reveal's own drawing units, where an object is about 240 across. */
+export const OUTLINE_WEIGHT = 3.1;
+
+/**
+ * Strokes the path that `trace` lays down as an ink outline. `trace` must begin the path itself.
+ * Call this before filling the shapes: the fills then cover the inner half of the line and every
+ * line where two shapes overlap, leaving one outline round the whole silhouette. A second pass
+ * sits a little off the first, so the line swells and thins like a drawn one. `body` is added to
+ * the line's width, for outlining something that is itself drawn as a stroke that wide.
+ */
+export function inkOutline(
+  ctx: CanvasRenderingContext2D,
+  weight: number,
+  trace: () => void,
+  body = 0,
+): void {
+  ctx.save();
+  ctx.strokeStyle = INK;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.lineWidth = body + weight;
+  trace();
+  ctx.stroke();
+  ctx.translate(weight * 0.12, weight * -0.15);
+  ctx.lineWidth = body + weight * 1.23;
+  trace();
+  ctx.stroke();
+  ctx.restore();
+}

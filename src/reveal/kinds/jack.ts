@@ -1,11 +1,13 @@
 import {
   CONFETTI_COLORS,
   GOLD_GLOW_RGB,
+  OUTLINE_WEIGHT,
   PALETTE,
   Spring,
   clamp,
   easeInCubic,
   glow,
+  inkOutline,
   lerp,
   rand,
   softShadow,
@@ -43,6 +45,10 @@ const KNOB_RADIUS = 14;
 const COIL_BASE = -BOX.height + 70;
 const HEAD_RADIUS = 40;
 const JACK_RISE = 170;
+const COIL_LOOPS = 9;
+const COLLAR_SPIKES = 7;
+const BELL_RADIUS = 5;
+const LATCH = { x: LID_WIDTH - 32, y: -6, width: 14, height: 20, radius: 4 };
 
 interface Layout {
   cx: number;
@@ -240,14 +246,13 @@ function drawLid(ctx: CanvasRenderingContext2D, strain: number): void {
   cornerCap(ctx, 0, -t, 0.8, 0.8);
   cornerCap(ctx, w, -t, -0.8, 0.8);
 
-  const hx = w - 32;
   const jitter = Math.sin(strain * 97) * strain * 1.5;
   ctx.save();
-  ctx.translate(hx, -6);
+  ctx.translate(LATCH.x, LATCH.y);
   ctx.rotate(jitter * 0.05);
   ctx.beginPath();
-  ctx.roundRect(0, 0, 14, 20, 4);
-  ctx.fillStyle = metal(ctx, 0, 0, 14, 0);
+  ctx.roundRect(0, 0, LATCH.width, LATCH.height, LATCH.radius);
+  ctx.fillStyle = metal(ctx, 0, 0, LATCH.width, 0);
   ctx.fill();
   ctx.fillStyle = 'rgba(43, 34, 51, 0.55)';
   ctx.beginPath();
@@ -256,6 +261,14 @@ function drawLid(ctx: CanvasRenderingContext2D, strain: number): void {
   ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
   ctx.fillRect(2.5, 2, 2, 12);
   ctx.restore();
+}
+
+/** Ink round the latch, in hinge space. Call before `drawLid`, which covers the part on the lid. */
+function outlineLatch(ctx: CanvasRenderingContext2D): void {
+  inkOutline(ctx, OUTLINE_WEIGHT, () => {
+    ctx.beginPath();
+    ctx.roundRect(LATCH.x, LATCH.y, LATCH.width, LATCH.height, LATCH.radius);
+  });
 }
 
 /** Dark gap under a slightly lifted lid, with two eyes looking out. */
@@ -289,13 +302,30 @@ function drawPeek(ctx: CanvasRenderingContext2D, lift: number, blink: number, lo
   ctx.restore();
 }
 
+/** Height of one loop of the spring when its top is at `top`. */
+function coilLoopY(top: number, index: number): number {
+  return COIL_BASE - ((COIL_BASE - top) * (index + 0.5)) / COIL_LOOPS;
+}
+
+function outlineCoil(ctx: CanvasRenderingContext2D, top: number): void {
+  for (let i = 0; i < COIL_LOOPS; i++) {
+    inkOutline(
+      ctx,
+      OUTLINE_WEIGHT,
+      () => {
+        ctx.beginPath();
+        ctx.ellipse(0, coilLoopY(top, i), 20, 6, -0.12, 0, Math.PI * 2);
+      },
+      5,
+    );
+  }
+}
+
 function drawCoil(ctx: CanvasRenderingContext2D, top: number): void {
-  const loops = 9;
-  const length = COIL_BASE - top;
   ctx.lineCap = 'round';
   for (const front of [false, true]) {
-    for (let i = 0; i < loops; i++) {
-      const y = COIL_BASE - (length * (i + 0.5)) / loops;
+    for (let i = 0; i < COIL_LOOPS; i++) {
+      const y = coilLoopY(top, i);
       ctx.beginPath();
       if (front) ctx.ellipse(0, y, 20, 6, -0.12, 0, Math.PI);
       else ctx.ellipse(0, y, 20, 6, -0.12, Math.PI, Math.PI * 2);
@@ -312,27 +342,83 @@ function drawCoil(ctx: CanvasRenderingContext2D, top: number): void {
   }
 }
 
+function collarAngle(index: number): number {
+  return Math.PI * (0.08 + (index * 0.84) / (COLLAR_SPIKES - 1));
+}
+
+/** Tip of one spike of the jester collar, where its bell hangs. */
+function collarTip(index: number): Point {
+  const angle = collarAngle(index);
+  return {
+    x: Math.cos(angle) * (HEAD_RADIUS + 22),
+    y: HEAD_RADIUS * 0.62 + Math.sin(angle) * 26,
+  };
+}
+
+/** Adds one spike of the collar to the current path. */
+function collarSpike(ctx: CanvasRenderingContext2D, index: number): void {
+  const r = HEAD_RADIUS;
+  const angle = collarAngle(index);
+  const tip = collarTip(index);
+  const baseAngle = 0.3;
+  ctx.moveTo(Math.cos(angle - baseAngle) * r * 0.75, r * 0.55 + Math.sin(angle - baseAngle) * 8);
+  ctx.lineTo(tip.x, tip.y);
+  ctx.lineTo(Math.cos(angle + baseAngle) * r * 0.75, r * 0.55 + Math.sin(angle + baseAngle) * 8);
+  ctx.closePath();
+}
+
+/** Adds the cone of the party hat to the current path, in the hat's own space. */
+function hatCone(ctx: CanvasRenderingContext2D): void {
+  ctx.moveTo(-22, 0);
+  ctx.lineTo(0, -50);
+  ctx.lineTo(22, 0);
+  ctx.quadraticCurveTo(0, 6, -22, 0);
+  ctx.closePath();
+}
+
+function hatAngle(time: number): number {
+  return 0.22 + Math.sin(time * 5) * 0.05;
+}
+
+/** Ink round what `drawSnowman` draws at the same time. */
+function outlineSnowman(ctx: CanvasRenderingContext2D, time: number): void {
+  const r = HEAD_RADIUS;
+  inkOutline(ctx, OUTLINE_WEIGHT, () => {
+    ctx.beginPath();
+    for (let i = 0; i < COLLAR_SPIKES; i++) {
+      collarSpike(ctx, i);
+      const tip = collarTip(i);
+      ctx.moveTo(tip.x + BELL_RADIUS, tip.y);
+      ctx.arc(tip.x, tip.y, BELL_RADIUS, 0, Math.PI * 2);
+    }
+    ctx.moveTo(r, 0);
+    ctx.ellipse(0, 0, r, r * 0.96, 0, 0, Math.PI * 2);
+    ctx.save();
+    ctx.translate(6, -r * 0.82);
+    ctx.rotate(hatAngle(time));
+    hatCone(ctx);
+    ctx.roundRect(-24, -4, 48, 8, 4);
+    ctx.moveTo(8, -50);
+    ctx.arc(0, -50, 8, 0, Math.PI * 2);
+    ctx.restore();
+  });
+}
+
 /** Soft-toy snowman head with a jester collar and party hat, centred on the origin. */
 function drawSnowman(ctx: CanvasRenderingContext2D, time: number, surprise: number): void {
   const r = HEAD_RADIUS;
-  for (let i = 0; i < 7; i++) {
-    const angle = Math.PI * (0.08 + (i * 0.84) / 6);
-    const tipX = Math.cos(angle) * (r + 22);
-    const tipY = r * 0.62 + Math.sin(angle) * 26;
-    const baseAngle = 0.3;
+  for (let i = 0; i < COLLAR_SPIKES; i++) {
+    const tip = collarTip(i);
     ctx.beginPath();
-    ctx.moveTo(Math.cos(angle - baseAngle) * r * 0.75, r * 0.55 + Math.sin(angle - baseAngle) * 8);
-    ctx.lineTo(tipX, tipY);
-    ctx.lineTo(Math.cos(angle + baseAngle) * r * 0.75, r * 0.55 + Math.sin(angle + baseAngle) * 8);
-    ctx.closePath();
+    collarSpike(ctx, i);
     ctx.fillStyle = i % 2 === 0 ? PALETTE.red : PALETTE.gold;
     ctx.fill();
-    const bell = ctx.createRadialGradient(tipX - 1.5, tipY - 1.5, 0.5, tipX, tipY, 5);
+    const bell = ctx.createRadialGradient(tip.x - 1.5, tip.y - 1.5, 0.5, tip.x, tip.y, BELL_RADIUS);
     bell.addColorStop(0, PALETTE.white);
     bell.addColorStop(0.4, PALETTE.goldPale);
     bell.addColorStop(1, PALETTE.goldDeep);
     ctx.fillStyle = bell;
-    ellipse(ctx, tipX, tipY, 5, 5);
+    ellipse(ctx, tip.x, tip.y, BELL_RADIUS, BELL_RADIUS);
   }
 
   const felt = ctx.createRadialGradient(-r * 0.35, -r * 0.4, r * 0.1, 0, 0, r);
@@ -385,13 +471,9 @@ function drawSnowman(ctx: CanvasRenderingContext2D, time: number, surprise: numb
 
   ctx.save();
   ctx.translate(6, -r * 0.82);
-  ctx.rotate(0.22 + Math.sin(time * 5) * 0.05);
+  ctx.rotate(hatAngle(time));
   ctx.beginPath();
-  ctx.moveTo(-22, 0);
-  ctx.lineTo(0, -50);
-  ctx.lineTo(22, 0);
-  ctx.quadraticCurveTo(0, 6, -22, 0);
-  ctx.closePath();
+  hatCone(ctx);
   ctx.fillStyle = lacquer(ctx, -22, 22, PALETTE.redLight);
   ctx.save();
   ctx.fill();
@@ -676,6 +758,51 @@ export const createJack: RevealFactory = (stage) => {
     else showHint('Turn the handle');
   }
 
+  /** Centre of the handle's knob, in design units. It trembles as the spring tightens. */
+  function knobCentre(): Point {
+    const angle = knobAngle();
+    const strain = shiver * 1.2;
+    return {
+      x: AXLE.x + Math.cos(angle) * ARM + Math.sin(stage.time * 71) * strain,
+      y: AXLE.y + Math.sin(angle) * ARM + Math.cos(stage.time * 63) * strain,
+    };
+  }
+
+  /** Ink round the box, its lid and the axle. Call before any of them is drawn. */
+  function outlineBox(ctx: CanvasRenderingContext2D, lift: number): void {
+    const { halfWidth: hw, height: h } = BOX;
+    inkOutline(ctx, OUTLINE_WEIGHT, () => {
+      ctx.beginPath();
+      ctx.rect(hw, AXLE.y - 4.5, AXLE.x - hw, 9);
+      ctx.moveTo(hw + 9, AXLE.y);
+      ctx.ellipse(hw + 2, AXLE.y, 7, 14, 0, 0, Math.PI * 2);
+      ctx.roundRect(-hw, -h, hw * 2, h, 8);
+      ctx.roundRect(-hw - 4, -11, hw * 2 + 8, 11, 4);
+      ctx.save();
+      ctx.translate(HINGE.x, HINGE.y - (poppedAt === null ? lidRaise() : 0));
+      ctx.rotate(-lift);
+      ctx.roundRect(0, -LID.thickness, LID_WIDTH, LID.thickness, 7);
+      ctx.restore();
+    });
+  }
+
+  /** Ink round the handle. Call before `drawCrankFront`. */
+  function outlineCrankFront(ctx: CanvasRenderingContext2D): void {
+    const knob = knobCentre();
+    inkOutline(ctx, OUTLINE_WEIGHT, () => {
+      ctx.beginPath();
+      ctx.save();
+      ctx.translate(AXLE.x, AXLE.y);
+      ctx.rotate(knobAngle());
+      ctx.roundRect(-7, -5.5, ARM + 14, 11, 5.5);
+      ctx.restore();
+      ctx.moveTo(AXLE.x + 10, AXLE.y);
+      ctx.arc(AXLE.x, AXLE.y, 10, 0, Math.PI * 2);
+      ctx.moveTo(knob.x + KNOB_RADIUS, knob.y);
+      ctx.arc(knob.x, knob.y, KNOB_RADIUS, 0, Math.PI * 2);
+    });
+  }
+
   function drawCrankBack(ctx: CanvasRenderingContext2D): void {
     const hw = BOX.halfWidth;
     ctx.fillStyle = metal(ctx, 0, AXLE.y - 5, 0, AXLE.y + 5);
@@ -732,9 +859,7 @@ export const createJack: RevealFactory = (stage) => {
     ctx.fillStyle = PALETTE.goldDeep;
     ellipse(ctx, AXLE.x, AXLE.y, 3, 3);
 
-    const strain = shiver * 1.2;
-    const kx = AXLE.x + Math.cos(angle) * ARM + Math.sin(stage.time * 71) * strain;
-    const ky = AXLE.y + Math.sin(angle) * ARM + Math.cos(stage.time * 63) * strain;
+    const { x: kx, y: ky } = knobCentre();
     if (pulse > 0) {
       ctx.beginPath();
       ctx.arc(kx, ky, KNOB_RADIUS + 4 + pulse * 14, 0, Math.PI * 2);
@@ -764,10 +889,12 @@ export const createJack: RevealFactory = (stage) => {
     ctx.translate(0, COIL_BASE);
     ctx.rotate(sway.value * 0.35);
     ctx.translate(0, -COIL_BASE);
+    outlineCoil(ctx, top);
     drawCoil(ctx, top);
     ctx.translate(0, top - HEAD_RADIUS * 0.75);
     ctx.rotate(sway.value * 0.4);
     ctx.scale(1 - stretch * 0.5, 1 + stretch);
+    outlineSnowman(ctx, stage.time);
     drawSnowman(ctx, stage.time, clamp(stretch * 5 + 0.3, 0, 1));
     ctx.restore();
   }
@@ -846,6 +973,7 @@ export const createJack: RevealFactory = (stage) => {
       ctx.scale(s * (1 + sq * 0.5), s * (1 - sq));
 
       const lift = lidLift();
+      outlineBox(ctx, lift);
       if (poppedAt !== null) {
         const rim = ctx.createLinearGradient(0, -BOX.height - 9, 0, -BOX.height + 4);
         rim.addColorStop(0, '#120c18');
@@ -855,6 +983,7 @@ export const createJack: RevealFactory = (stage) => {
         ctx.save();
         ctx.translate(HINGE.x, HINGE.y);
         ctx.rotate(-lift);
+        outlineLatch(ctx);
         drawLid(ctx, 0);
         ctx.restore();
         drawJack(ctx);
@@ -871,6 +1000,7 @@ export const createJack: RevealFactory = (stage) => {
         ctx.save();
         ctx.translate(HINGE.x, HINGE.y - lidRaise());
         ctx.rotate(-lift);
+        outlineLatch(ctx);
         drawLid(ctx, shiver);
         ctx.restore();
       }
@@ -878,6 +1008,7 @@ export const createJack: RevealFactory = (stage) => {
       const idle = poppedAt === null && frozenAt === null && grab !== 'knob';
       const pulse = idle && wound === 0 ? (stage.time * 0.9) % 1 : 0;
       const cue = idle && wound === 0 ? 1 : 0;
+      outlineCrankFront(ctx);
       drawCrankFront(ctx, pulse, cue);
       ctx.restore();
     },
