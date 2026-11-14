@@ -41,6 +41,16 @@ const PENGUIN_GRAVITY = 7;
 const GIFT_MIN = -0.72;
 const GIFT_MAX = 0.3;
 const INK = '#2b2233';
+/** Width of the ink line round the globe, in globe space. Half of it sits behind the artwork. */
+const OUTLINE_WIDTH = 0.026;
+/** A second, slightly misplaced pass of the ink line, so its thickness varies like a drawn one. */
+const OUTLINE_DRIFT = { x: 0.003, y: -0.004, turn: 0.006, extra: 0.006 };
+const GRAIN_SIZE = 384;
+/** Grain texels per CSS pixel. */
+const GRAIN_DENSITY = 2;
+const GRAIN_DARK: readonly [number, number, number] = [30, 41, 59];
+/** Outer edge of the glass, including its rim, in globe space. */
+const GLASS_EDGE = 1.016;
 
 /** Hairline cracks in globe space, each with the charge at which it starts to grow. */
 const CRACKS: readonly { start: number; points: readonly Point[] }[] = [
@@ -372,6 +382,120 @@ function drawScene(
   ctx.restore();
 }
 
+/** The base from `top` down to its rounded foot, in globe space. */
+function baseBand(top: number): Path2D {
+  const half = 0.7 + ((top - 0.78) / 0.52) * 0.22;
+  const path = new Path2D();
+  path.moveTo(-half, top);
+  path.lineTo(half, top);
+  path.lineTo(0.92, 1.3);
+  path.quadraticCurveTo(0.92, 1.4, 0.8, 1.4);
+  path.lineTo(-0.8, 1.4);
+  path.quadraticCurveTo(-0.92, 1.4, -0.92, 1.3);
+  path.closePath();
+  return path;
+}
+
+function baseCollar(): Path2D {
+  const path = new Path2D();
+  path.roundRect(-0.75, 0.72, 1.5, 0.125, 0.06);
+  return path;
+}
+
+function glassEdge(): Path2D {
+  const path = new Path2D();
+  path.arc(0, 0, GLASS_EDGE, 0, Math.PI * 2);
+  return path;
+}
+
+/**
+ * Dark ink line round the globe. Draw it before the artwork: the fills then cover its inner half
+ * and every line where two parts overlap, leaving a single outline round the whole silhouette.
+ */
+function drawOutline(ctx: CanvasRenderingContext2D, glass: boolean): void {
+  const parts = [baseBand(0.78), baseCollar()];
+  if (glass) parts.push(glassEdge());
+  ctx.save();
+  ctx.strokeStyle = INK;
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = OUTLINE_WIDTH;
+  for (const part of parts) ctx.stroke(part);
+  ctx.translate(OUTLINE_DRIFT.x, OUTLINE_DRIFT.y);
+  ctx.rotate(OUTLINE_DRIFT.turn);
+  ctx.lineWidth = OUTLINE_WIDTH + OUTLINE_DRIFT.extra;
+  for (const part of parts) ctx.stroke(part);
+  ctx.restore();
+}
+
+let sharedGrain: HTMLCanvasElement | null = null;
+
+/**
+ * Paper grain tile: short brush strokes and fine noise, stored as faint dark and light pixels so
+ * it can be laid over artwork with an ordinary fill. Strokes wrap round the edges so it repeats
+ * without seams.
+ */
+function grainTile(): HTMLCanvasElement | null {
+  if (sharedGrain) return sharedGrain;
+  const tile = document.createElement('canvas');
+  tile.width = GRAIN_SIZE;
+  tile.height = GRAIN_SIZE;
+  const ctx = tile.getContext('2d');
+  if (!ctx) return null;
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, GRAIN_SIZE, GRAIN_SIZE);
+  ctx.lineCap = 'round';
+  const strokes = Math.round((GRAIN_SIZE * GRAIN_SIZE) / 180);
+  for (let i = 0; i < strokes; i++) {
+    const x = rand(0, GRAIN_SIZE);
+    const y = rand(0, GRAIN_SIZE);
+    const length = rand(12, 46);
+    const angle = rand(-0.85, -0.15);
+    ctx.strokeStyle = Math.random() < 0.5 ? 'rgba(255, 255, 255, 0.07)' : 'rgba(0, 0, 0, 0.07)';
+    ctx.lineWidth = rand(1, 4);
+    for (const wrapX of [0, -GRAIN_SIZE]) {
+      for (const wrapY of [0, GRAIN_SIZE]) {
+        ctx.beginPath();
+        ctx.moveTo(x + wrapX, y + wrapY);
+        ctx.lineTo(x + wrapX + Math.cos(angle) * length, y + wrapY + Math.sin(angle) * length);
+        ctx.stroke();
+      }
+    }
+  }
+  const image = ctx.getImageData(0, 0, GRAIN_SIZE, GRAIN_SIZE);
+  for (let i = 0; i < image.data.length; i += 4) {
+    const offset = (image.data[i] / 255 - 0.5) * 0.3 + rand(-0.03, 0.03);
+    for (let channel = 0; channel < 3; channel++) {
+      image.data[i + channel] = offset < 0 ? GRAIN_DARK[channel] : 255;
+    }
+    image.data[i + 3] = Math.min(255, Math.abs(offset) * 290);
+  }
+  ctx.putImageData(image, 0, 0);
+  sharedGrain = tile;
+  return tile;
+}
+
+/**
+ * Lays paper grain over the globe. The grain stays still on screen while the globe moves under
+ * it, as it would if the globe were painted on paper.
+ */
+function drawGrain(
+  ctx: CanvasRenderingContext2D,
+  grain: CanvasPattern,
+  glass: boolean,
+  pixelRatio: number,
+): void {
+  const silhouette = baseBand(0.78);
+  silhouette.addPath(baseCollar());
+  if (glass) silhouette.addPath(glassEdge());
+  const scale = pixelRatio / GRAIN_DENSITY;
+  ctx.save();
+  ctx.clip(silhouette);
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.fillStyle = grain;
+  ctx.fillRect(0, 0, ctx.canvas.width / scale, ctx.canvas.height / scale);
+  ctx.restore();
+}
+
 function drawBase(ctx: CanvasRenderingContext2D): void {
   const lacquer = ctx.createLinearGradient(-0.92, 0, 0.92, 0);
   lacquer.addColorStop(0, PALETTE.redDeep);
@@ -379,20 +503,10 @@ function drawBase(ctx: CanvasRenderingContext2D): void {
   lacquer.addColorStop(0.36, PALETTE.redLight);
   lacquer.addColorStop(0.6, PALETTE.red);
   lacquer.addColorStop(1, PALETTE.redDeep);
-  for (const band of [false, true]) {
-    const top = band ? 1.23 : 0.78;
-    const half = 0.7 + ((top - 0.78) / 0.52) * 0.22;
-    ctx.beginPath();
-    ctx.moveTo(-half, top);
-    ctx.lineTo(half, top);
-    ctx.lineTo(0.92, 1.3);
-    ctx.quadraticCurveTo(0.92, 1.4, 0.8, 1.4);
-    ctx.lineTo(-0.8, 1.4);
-    ctx.quadraticCurveTo(-0.92, 1.4, -0.92, 1.3);
-    ctx.closePath();
-    ctx.fillStyle = band ? metal(ctx, 0.92) : lacquer;
-    ctx.fill();
-  }
+  ctx.fillStyle = lacquer;
+  ctx.fill(baseBand(0.78));
+  ctx.fillStyle = metal(ctx, 0.92);
+  ctx.fill(baseBand(1.23));
   ctx.fillStyle = 'rgba(255, 255, 255, 0.24)';
   ctx.beginPath();
   ctx.moveTo(-0.47, 0.88);
@@ -404,9 +518,7 @@ function drawBase(ctx: CanvasRenderingContext2D): void {
   ctx.fillStyle = 'rgba(30, 41, 59, 0.22)';
   ctx.fillRect(-0.72, 0.84, 1.44, 0.03);
   ctx.fillStyle = metal(ctx, 0.75);
-  ctx.beginPath();
-  ctx.roundRect(-0.75, 0.72, 1.5, 0.125, 0.06);
-  ctx.fill();
+  ctx.fill(baseCollar());
   ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
   ctx.fillRect(-0.68, 0.745, 1.36, 0.018);
   sparkle(ctx, 0, 1.04, 0.12, PALETTE.goldPale);
@@ -531,6 +643,7 @@ export const createGlobe: RevealFactory = (stage) => {
   let nextWiggle = 2.5;
   let poppedAt: number | null = null;
   let completeSent = false;
+  let grain: CanvasPattern | null = null;
 
   stage.setHint(hint);
 
@@ -942,6 +1055,7 @@ export const createGlobe: RevealFactory = (stage) => {
     },
     draw(ctx) {
       const l = layout();
+      const pixelRatio = ctx.getTransform().a;
       const elapsed = poppedAt === null ? 0 : stage.time - poppedAt;
       const fade = 1 - easeOutCubic((elapsed - 0.25) / 0.6);
       if (poppedAt !== null) {
@@ -966,6 +1080,8 @@ export const createGlobe: RevealFactory = (stage) => {
       ctx.scale(l.radius, l.radius);
       glow(ctx, 0, 0, 1.3 + 0.5 * charge, GOLD_GLOW_RGB, 0.55 * charge);
       const glass = 1 - clamp(elapsed / 0.3, 0, 1);
+      const intact = poppedAt === null;
+      drawOutline(ctx, intact);
       if (glass > 0) {
         const swell = 1 + easeOutCubic(elapsed / 0.3) * 0.25;
         ctx.save();
@@ -976,6 +1092,11 @@ export const createGlobe: RevealFactory = (stage) => {
         glow(ctx, 0, 0, 1.7, '255, 255, 255', poppedAt === null ? 0 : 0.9 * glass);
       }
       drawBase(ctx);
+      if (!grain) {
+        const tile = grainTile();
+        grain = tile ? ctx.createPattern(tile, 'repeat') : null;
+      }
+      if (grain) drawGrain(ctx, grain, intact, pixelRatio);
       ctx.restore();
     },
     onPointerDown(point) {
