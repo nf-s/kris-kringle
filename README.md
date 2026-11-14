@@ -47,11 +47,12 @@ characters attached to its own event, and never their names. Previews at `/previ
 no characters.
 
 On a phone each reveal can also be done by moving the phone: shake it for the snow globe, twist
-it back and forth for the jack-in-the-box, rock it from side to side for the egg, and flick it
-for the present and the cracker. Moving the phone is meant to take about as much effort as
-touch: the handle turns no faster than a finger could turn it, rocking has to be a real swing
-from side to side rather than a shake, and it takes several flicks to pull the ribbon out a
-notch or tear the cracker, fewer the sharper they are. The hint under the object names both
+it back and forth for the jack-in-the-box, give a short tap-like jolt for the egg, and flick it
+for the present and the cracker. Each egg impact counts as five screen taps, so four impacts
+crack it; screen tapping still takes twenty hits. The impact can be vertical or towards/away
+from the screen and does not require touching a surface. The handle turns no faster than a
+finger could turn it, and it takes several flicks to pull the ribbon out a notch or tear the
+cracker, fewer the sharper they are. The hint under the object names both
 ways once the phone is reporting its movement, and everything still works by touch alone. A
 "Motion on / Motion off" button appears under the sound button on phones that report movement;
 on an iPhone it starts off, and turning it on brings up the system's permission prompt.

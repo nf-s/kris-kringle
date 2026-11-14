@@ -19,16 +19,8 @@ const HITS_PER_DODGE = 4;
 const SEAL_AFTER = 1.7;
 const SEAL_INTERVAL = 0.7;
 const COMPLETE_DELAY = 0.4;
-/** How far the phone has to lean to one side, as a share of gravity, to knock the egg. */
-const ROCK_LEAN = 0.26;
-/** Radians the phone has to turn in swinging from one side to the other. */
-const ROCK_SWING = 0.2;
-/** Shortest time between two knocks, in seconds. */
-const ROCK_GAP = 0.25;
-/** Moved harder than this, in m/s², the phone is being shaken, which does not knock the egg. */
-const ROCK_CALM = 9;
-/** How far the egg leans with the phone. */
-const ROCK_TILT = 6;
+/** One sharp phone impact does the work of five screen taps. */
+const HITS_PER_IMPACT = 5;
 
 interface Crack {
   /** Polylines in unit egg space (x and y in -1..1). */
@@ -138,11 +130,6 @@ export const createEgg: RevealFactory = (stage) => {
   let dodgeSlot = 0;
   let lastHitAt = 0;
   let dragStart: Point | null = null;
-  /** Side the phone last leaned to: -1, 0 or 1. Null until the phone reports its movement. */
-  let rockSide: number | null = null;
-  /** Radians the phone has turned since it last leaned to a side. */
-  let rockSwing = 0;
-  let lastRockAt = -Infinity;
   let hint = '';
 
   /** Shows `moving` in place of `tapping` while the phone's own movement is in use. */
@@ -154,7 +141,7 @@ export const createEgg: RevealFactory = (stage) => {
   }
 
   function showIdleHint(): void {
-    showHint('Tap the egg', 'Rock your phone or tap the egg');
+    showHint('Tap the egg', 'Jolt your phone or tap the egg');
   }
 
   showIdleHint();
@@ -209,16 +196,18 @@ export const createEgg: RevealFactory = (stage) => {
     return { x: (point.x - l.cx) / l.rx, y: (point.y - l.cy) / l.ry };
   }
 
-  function strike(point: Point): void {
+  function strike(point: Point, hitCount = 1): boolean {
     const l = layout();
     const local = toLocal(point, l);
     const distance = Math.hypot(local.x, local.y);
-    if (distance > 1.15 || brokenAt !== null) return;
+    if (distance > 1.15 || brokenAt !== null) return false;
     const scaleIn = distance > 0.7 ? 0.7 / distance : 1;
-    dragStart = point;
     lastHitAt = stage.time;
-    hits += 1;
-    cracks.push(makeCrack({ x: local.x * scaleIn, y: local.y * scaleIn }));
+    const before = hits;
+    hits = Math.min(HITS_TO_BREAK, hits + hitCount);
+    for (let hit = before; hit < hits; hit++) {
+      cracks.push(makeCrack({ x: local.x * scaleIn, y: local.y * scaleIn }));
+    }
     squash.velocity += 2.4;
     tilt.velocity += (local.x < 0 ? 1 : -1) * rand(2, 3.4);
     surprise = 1;
@@ -241,8 +230,8 @@ export const createEgg: RevealFactory = (stage) => {
       stage.haptic(12);
       if (hits >= HITS_TO_BREAK - 4) showHint('Nearly there');
       else showHint('Keep tapping', 'Keep going');
-      if (hits % HITS_PER_DODGE === 0) dodgeAway(l);
-      return;
+      if (Math.floor(hits / HITS_PER_DODGE) > Math.floor(before / HITS_PER_DODGE)) dodgeAway(l);
+      return true;
     }
 
     brokenAt = stage.time;
@@ -274,35 +263,18 @@ export const createEgg: RevealFactory = (stage) => {
       gravity: 200,
       drag: 2,
     });
+    return true;
   }
 
   /**
-   * Rocking the phone from side to side knocks the egg on the side it tips towards, once for
-   * each swing, and the egg leans with the phone. Shaking it does not count as rocking.
+   * The sensor reports one flick per sharp jolt, including a tap-like stop along the phone's
+   * depth axis. Treat it as an impact on the egg's base, without needing a sideways swing.
    */
-  function rock(): void {
-    if (!stage.motion.active) {
-      rockSide = null;
-      return;
-    }
-    const lean = stage.motion.tilt.x;
-    if (dragStart === null) tilt.target = clamp(lean * ROCK_TILT, -3.2, 3.2);
-    rockSwing += stage.motion.turned;
-    const side = Math.abs(lean) > ROCK_LEAN ? Math.sign(lean) : 0;
-    if (rockSide === null) {
-      rockSide = side;
-      return;
-    }
-    if (side === 0 || side === rockSide) return;
-    const swung = rockSwing;
-    rockSide = side;
-    rockSwing = 0;
-    if (swung < ROCK_SWING || stage.motion.force > ROCK_CALM) return;
-    if (stage.time - lastRockAt < ROCK_GAP) return;
-    lastRockAt = stage.time;
+  function impact(): void {
+    const flick = stage.motion.flick;
+    if (!stage.motion.active || !flick) return;
     const l = layout();
-    strike({ x: l.cx + side * l.rx * 0.45, y: l.cy + rand(-0.35, 0.35) * l.ry });
-    dragStart = null;
+    strike({ x: l.cx + flick.direction.x * l.rx * 0.45, y: l.cy + l.ry * 0.55 }, HITS_PER_IMPACT);
   }
 
   function drawShell(ctx: CanvasRenderingContext2D): void {
@@ -492,7 +464,7 @@ export const createEgg: RevealFactory = (stage) => {
       tilt.update(dt);
       dodge.update(dt);
       hop.update(dt);
-      if (brokenAt === null) rock();
+      if (brokenAt === null) impact();
       if (hits === 0 && brokenAt === null) showIdleHint();
       if (hits > 0 && brokenAt === null && stage.time - lastHitAt > SEAL_AFTER) {
         sealNewestCrack(layout());
@@ -526,7 +498,9 @@ export const createEgg: RevealFactory = (stage) => {
       if (brokenAt === null) drawWhole(ctx, l);
       else drawBroken(ctx, l, stage.time - brokenAt);
     },
-    onPointerDown: strike,
+    onPointerDown(point) {
+      if (strike(point)) dragStart = point;
+    },
     onPointerMove(point, down) {
       const l = layout();
       if (down && dragStart && brokenAt === null) {

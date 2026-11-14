@@ -162,6 +162,38 @@ describe('motion sensor', () => {
     expect(flicks[0].strength).toBeLessThan(0.6);
   });
 
+  it('reports one flick per brief impact and rearms between vertical and screen-normal pulses', () => {
+    for (const direction of [
+      { x: 0, y: 1, z: 0 },
+      { x: 0, y: 0, z: 1 },
+    ]) {
+      const device = phone(ANDROID);
+      const sensor = createMotionSensor();
+      hold(device, sensor, 0.5, () => ({ acceleration: UPRIGHT_ANDROID }));
+      const flicks: Flick[] = [];
+      const pulse = [30, 18, -5];
+      for (let impact = 0; impact < 4; impact++) {
+        // A sharp onset, a small rebound, then stillness before the next tap-like movement.
+        for (let frame = 0; frame < 50; frame++) {
+          const acceleration = pulse[frame] ?? 0;
+          device.send({
+            x: direction.x * acceleration,
+            y: 9.81 + direction.y * acceleration,
+            z: direction.z * acceleration,
+          });
+          sensor.advance(STEP / 1000);
+          if (sensor.motion.flick) flicks.push(sensor.motion.flick);
+        }
+        expect(flicks).toHaveLength(impact + 1);
+      }
+      if (direction.z !== 0) {
+        expect(flicks.every((flick) => flick.direction.x === 0 && flick.direction.y === 0)).toBe(
+          true,
+        );
+      }
+    }
+  });
+
   it('reports a sharper flick as stronger, up to a limit', () => {
     expect(jolted(60)[0].strength).toBe(1);
   });

@@ -30,6 +30,7 @@ function play(
   seconds: number,
   active: boolean,
   move: (time: number, frame: number) => Partial<PhoneMotion>,
+  tap: (time: number, frame: number) => boolean = () => false,
 ): { completed: boolean; progress: number; hints: string[]; finishedAt: number } {
   let time = 0;
   let completed = false;
@@ -84,6 +85,11 @@ function play(
   const reveal = REVEAL_FACTORIES[kind](stage);
   for (let frame = 0; time < seconds && !completed; frame++) {
     phone = { ...still(active), ...(time < SETTLE ? {} : move(time - SETTLE, frame)) };
+    if (time >= SETTLE && tap(time - SETTLE, frame)) {
+      const point = { x: stage.width / 2, y: stage.height * 0.52 };
+      reveal.onPointerDown?.(point);
+      reveal.onPointerUp?.(point);
+    }
     reveal.update(FRAME);
     time += FRAME;
   }
@@ -135,11 +141,53 @@ describe('moving the phone', () => {
     expect(result.progress).toBe(0);
   });
 
-  it('cracks the egg when rocked from side to side', () => {
-    const result = play('egg', 20, true, rocking(3));
-    expect(result.completed).toBe(true);
-    expect(result.finishedAt).toBeGreaterThan(6);
-    expect(result.hints[0]).toBe('Rock your phone or tap the egg');
+  it('credits five taps per impact and cracks the egg with four sharp jolts', () => {
+    for (const direction of [
+      { x: 0, y: 1 },
+      { x: 0, y: 0 },
+    ]) {
+      for (const strength of [0, 1]) {
+        const impacts = flicks(0.8, direction, strength);
+        const first = play('egg', 1.2, true, impacts);
+        expect(first.progress).toBe(0.25);
+        expect(first.completed).toBe(false);
+        const three = play('egg', 2.8, true, impacts);
+        expect(three.progress).toBe(0.75);
+        expect(three.completed).toBe(false);
+        const four = play('egg', 4, true, impacts);
+        expect(four.completed).toBe(true);
+        expect(four.finishedAt).toBeLessThan(3.7);
+        expect(four.hints[0]).toBe('Jolt your phone or tap the egg');
+      }
+    }
+  });
+
+  it('keeps screen tapping at twenty hits and combines taps with motion', () => {
+    function taps(limit: number) {
+      let count = 0;
+      return (_time: number, frame: number) => frame % 6 === 0 && count++ < limit;
+    }
+    const nineteen = play('egg', 2.5, false, () => ({}), taps(19));
+    expect(nineteen.progress).toBe(0.95);
+    expect(nineteen.completed).toBe(false);
+    expect(play('egg', 3, false, () => ({}), taps(20)).completed).toBe(true);
+    const mixed = play('egg', 2.2, true, flicks(0.8, { x: 0, y: 0 }, 1), taps(10));
+    expect(mixed.progress).toBe(1);
+    expect(mixed.completed).toBe(true);
+  });
+
+  it('does not count impacts when motion is off', () => {
+    const result = play('egg', 5, false, flicks(0.8, { x: 0, y: 1 }, 1));
+    expect(result.progress).toBe(0);
+    expect(result.completed).toBe(false);
+  });
+
+  it('seals impact damage one crack at a time after the existing idle delay', () => {
+    const once = (_time: number, frame: number): Partial<PhoneMotion> =>
+      frame === 48 ? { flick: { direction: { x: 0, y: 0 }, strength: 1 } } : {};
+    expect(play('egg', 2.4, true, once).progress).toBe(0.25);
+    expect(play('egg', 2.7, true, once).progress).toBe(0.2);
+    expect(play('egg', 5.6, true, once).progress).toBe(0);
   });
 
   it('does not crack the egg when held at a steady lean', () => {
@@ -147,7 +195,7 @@ describe('moving the phone', () => {
     expect(result.progress).toBe(0);
   });
 
-  it('does not crack the egg when shaken', () => {
+  it('does not crack the egg from rocking or sustained force without an impact', () => {
     const shaken = play('egg', 5, true, (time) => ({ ...rocking(8)(time), force: 20 }));
     expect(shaken.progress).toBe(0);
     const jiggled = play('egg', 5, true, (time) => ({ ...rocking(3)(time), turned: 0 }));
