@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import {
+  CHARACTER_POSES,
   adminStateSchema,
   characterListSchema,
   errorResponseSchema,
@@ -140,7 +141,7 @@ export function fetchReveal(token: string): Promise<RevealResponse> {
 }
 
 export function castImagePath(token: string, characterId: string): string {
-  return `/api/reveal/${encodeURIComponent(token)}/cast/${encodeURIComponent(characterId)}`;
+  return `/api/reveal/${encodeURIComponent(token)}/cast/${encodeURIComponent(characterId)}?poses=${CHARACTER_POSES.length}`;
 }
 
 export async function markViewed(token: string): Promise<void> {

@@ -8,16 +8,37 @@ import {
 
 export const SPRITE_WIDTH = CHARACTER_SPRITE.panelWidth * CHARACTER_LAYERS.length;
 export const SPRITE_HEIGHT = CHARACTER_SPRITE.panelHeight * CHARACTER_POSES.length;
+const LEGACY_SPRITE_HEIGHT = CHARACTER_SPRITE.panelHeight * 2;
 
-/** Top-left corner of one panel in the sprite sheet. */
-export function panelOrigin(pose: CharacterPose, layer: CharacterLayer): { x: number; y: number } {
+/** Both existing two-pose sheets and new three-pose sheets remain usable. */
+export function isCharacterSpriteSize(width: number, height: number): boolean {
+  return width === SPRITE_WIDTH && (height === SPRITE_HEIGHT || height === LEGACY_SPRITE_HEIGHT);
+}
+
+/** Old sheets use their praying row when a sad pose is requested. */
+export function panelOrigin(
+  pose: CharacterPose,
+  layer: CharacterLayer,
+  sheetHeight = SPRITE_HEIGHT,
+): { x: number; y: number } {
+  const availablePose = pose === 'sad' && sheetHeight < SPRITE_HEIGHT ? 'praying' : pose;
   return {
     x: CHARACTER_LAYERS.indexOf(layer) * CHARACTER_SPRITE.panelWidth,
-    y: CHARACTER_POSES.indexOf(pose) * CHARACTER_SPRITE.panelHeight,
+    y: CHARACTER_POSES.indexOf(availablePose) * CHARACTER_SPRITE.panelHeight,
   };
 }
 
-type Context = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+type Context = Pick<
+  CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  'drawImage' | 'save' | 'restore' | 'transform'
+>;
+
+function imageHeight(image: CanvasImageSource): number {
+  if ('naturalHeight' in image) return image.naturalHeight;
+  if ('videoHeight' in image) return image.videoHeight;
+  if ('displayHeight' in image) return image.displayHeight;
+  return typeof image.height === 'number' ? image.height : image.height.baseVal.value;
+}
 
 function drawLayer(
   ctx: Context,
@@ -27,7 +48,7 @@ function drawLayer(
   sheetScale: number,
 ): void {
   const { panelWidth, panelHeight } = CHARACTER_SPRITE;
-  const origin = panelOrigin(pose, layer);
+  const origin = panelOrigin(pose, layer, imageHeight(sprite) / sheetScale);
   ctx.drawImage(
     sprite,
     origin.x * sheetScale,

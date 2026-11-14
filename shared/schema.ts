@@ -20,7 +20,7 @@ export const MAIN_EVENT_ID = 'main';
  * the head and the parts that pass in front of the head, as three panels of the same size. The
  * figure sits at the same place in every panel, so the layers line up without further data.
  */
-export const characterPoseSchema = z.enum(['praying', 'wailing']);
+export const characterPoseSchema = z.enum(['praying', 'wailing', 'sad']);
 export type CharacterPose = z.infer<typeof characterPoseSchema>;
 export const CHARACTER_POSES: readonly CharacterPose[] = characterPoseSchema.options;
 export const characterLayerSchema = z.enum(['body', 'head', 'front']);

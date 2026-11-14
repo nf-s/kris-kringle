@@ -4,7 +4,14 @@ import {
   CHARACTER_SPRITE,
   type CharacterPose,
 } from '../../shared/schema';
-import { SPRITE_HEIGHT, SPRITE_WIDTH, drawFigure, panelOrigin } from '../characters/sprite';
+import {
+  SPRITE_HEIGHT,
+  SPRITE_WIDTH,
+  drawFigure,
+  isCharacterSpriteSize,
+  panelOrigin,
+} from '../characters/sprite';
+import { SWITCH_SECONDS, createCastState } from './cast-state';
 import { clamp, easeOutBack, lerp } from './draw';
 import type { Shape } from './engine';
 
@@ -27,10 +34,13 @@ export interface Placement {
 
 /**
  * The characters gathered round the object. They pray until the person makes progress, break
- * into wailing one at a time as it rises, and all wail and jig about once the object opens.
+ * into wailing one at a time as it rises, become sad during inactivity, and all wail and jig
+ * about once the object opens.
  */
 export interface Cast {
-  update(dt: number, progress: number, completed: boolean): void;
+  activity(): void;
+  /** `idleDt` counts only time while the page is visible. */
+  update(dt: number, progress: number, completed: boolean, idleDt?: number): void;
   draw(ctx: CanvasRenderingContext2D, area: CastArea, time: number): void;
   destroy(): void;
 }
@@ -64,12 +74,6 @@ const RING_SHAPES: readonly number[] = [2, 2.6, 3.4, 5];
 /** Figures at the back of the ring are drawn a little smaller. */
 const BACK_SCALE = 0.88;
 
-/** Progress at which the first and the last character start wailing. */
-const FIRST_BREAK = 0.08;
-const LAST_BREAK = 0.9;
-/** Progress has to fall this far below a character's breaking point before it calms down. */
-const CALM_MARGIN = 0.1;
-const SWITCH_SECONDS = 0.36;
 /** Point in the switch at which the pose changes, hidden by the squash. */
 const SWITCH_FLIP = 0.4;
 const ENTRANCE_SECONDS = 0.4;
@@ -86,8 +90,8 @@ const OUTLINE_STAMPS = 12;
 /** The outline is redrawn when the figures change size on screen by more than this share. */
 const OUTLINE_TOLERANCE = 0.15;
 
-const HEAD_TILT: Record<CharacterPose, number> = { praying: 0.035, wailing: 0.052 };
-const HEAD_SPEED: Record<CharacterPose, number> = { praying: 1, wailing: 1.9 };
+const HEAD_TILT: Record<CharacterPose, number> = { praying: 0.035, wailing: 0.052, sad: 0.012 };
+const HEAD_SPEED: Record<CharacterPose, number> = { praying: 1, wailing: 1.9, sad: 0.65 };
 
 /** True where `shape` covers any of the box from (left, top) to (right, bottom). */
 function covers(shape: Shape, left: number, top: number, right: number, bottom: number): boolean {
@@ -223,6 +227,7 @@ function outlineSheet(image: HTMLImageElement, width: number): HTMLCanvasElement
   for (const pose of CHARACTER_POSES) {
     for (const layer of CHARACTER_LAYERS) {
       const origin = panelOrigin(pose, layer);
+      const source = panelOrigin(pose, layer, image.naturalHeight);
       ctx.save();
       ctx.beginPath();
       ctx.rect(origin.x * scale, origin.y * scale, panelWidth * scale, panelHeight * scale);
@@ -231,8 +236,8 @@ function outlineSheet(image: HTMLImageElement, width: number): HTMLCanvasElement
         const angle = (stamp / OUTLINE_STAMPS) * Math.PI * 2;
         ctx.drawImage(
           image,
-          origin.x,
-          origin.y,
+          source.x,
+          source.y,
           panelWidth,
           panelHeight,
           (origin.x + Math.cos(angle) * width) * scale,
@@ -257,10 +262,6 @@ interface Member {
   outlinedAt: number;
   /** Seconds since the image arrived. */
   shownFor: number;
-  /** Progress at which this character starts wailing. */
-  breaksAt: number;
-  wailing: boolean;
-  sinceSwitch: number;
   /** Offsets this character's movement from everyone else's. */
   phase: number;
 }
@@ -301,6 +302,15 @@ export function createCast(images: readonly string[]): Cast {
   let placedFor = '';
 
   const ranks = shuffled(images.map((_, index) => index));
+  const state = createCastState(ranks);
+  const blend = document.createElement('canvas');
+  const poseCanvas = document.createElement('canvas');
+  for (const canvas of [blend, poseCanvas]) {
+    canvas.width = CHARACTER_SPRITE.panelWidth;
+    canvas.height = CHARACTER_SPRITE.panelHeight;
+  }
+  const blendContext = blend.getContext('2d');
+  const poseContext = poseCanvas.getContext('2d');
 
   const members: Member[] = shuffled(images).map((url, index) => {
     const member: Member = {
@@ -308,9 +318,6 @@ export function createCast(images: readonly string[]): Cast {
       outline: null,
       outlinedAt: 0,
       shownFor: 0,
-      breaksAt: count > 1 ? lerp(FIRST_BREAK, LAST_BREAK, ranks[index] / (count - 1)) : 0.5,
-      wailing: false,
-      sinceSwitch: SWITCH_SECONDS,
       phase: index * 1.37,
     };
     const image = new Image();
@@ -318,7 +325,9 @@ export function createCast(images: readonly string[]): Cast {
     image.src = url;
     image.decode().then(
       () => {
-        if (!destroyed) member.image = image;
+        if (!destroyed && isCharacterSpriteSize(image.naturalWidth, image.naturalHeight)) {
+          member.image = image;
+        }
       },
       // A character that fails to load is left out; the reveal works without it.
       () => undefined,
@@ -345,21 +354,30 @@ export function createCast(images: readonly string[]): Cast {
   function drawMember(
     ctx: CanvasRenderingContext2D,
     member: Member,
+    index: number,
     spot: Placement,
     time: number,
   ): void {
     if (!member.image) return;
+    const mood = state.members[index];
     const moving = !still.matches;
-    const flipped = !moving || member.sinceSwitch >= SWITCH_SECONDS * SWITCH_FLIP;
-    const pose: CharacterPose = member.wailing === flipped ? 'wailing' : 'praying';
-    const stretch = moving ? switchStretch(member.sinceSwitch) : 0;
+    const flipped = !moving || mood.sinceSwitch >= SWITCH_SECONDS * SWITCH_FLIP;
+    const pose: CharacterPose = mood.wailing === flipped ? 'wailing' : 'praying';
+    const sadWeight = moving ? mood.sadWeight : Number(mood.sadWeight > 0);
+    const stretch = moving ? switchStretch(mood.sinceSwitch) * (1 - sadWeight) : 0;
     const entrance = moving ? easeOutBack(member.shownFor / ENTRANCE_SECONDS) : 1;
     const jig =
       moving && sinceComplete !== null ? clamp(sinceComplete / JIG_RAMP_SECONDS, 0, 1) : 0;
-    const fretting = moving && pose === 'wailing' ? 1 : 0;
+    const fretting = moving && pose === 'wailing' ? 1 - sadWeight : 0;
 
-    const tilt = moving ? HEAD_TILT[pose] * sway(time * HEAD_SPEED[pose], member.phase) : 0;
-    const breath = moving ? Math.sin(time * 1.3 + member.phase) * 0.006 : 0;
+    const tilt = moving
+      ? lerp(
+          HEAD_TILT[pose] * sway(time * HEAD_SPEED[pose], member.phase),
+          HEAD_TILT.sad * sway(time * HEAD_SPEED.sad, member.phase),
+          sadWeight,
+        )
+      : 0;
+    const breath = moving ? Math.sin(time * 1.3 + member.phase) * 0.006 * (1 - sadWeight * 0.5) : 0;
     const shudder = fretting * Math.sin(time * 23 + member.phase * 3) * 0.006;
     const bounce = fretting * Math.abs(Math.sin(time * 5 + member.phase)) * 0.02;
     const hop = jig * Math.abs(Math.sin(time * 4.2 + member.phase)) * 0.07;
@@ -379,28 +397,46 @@ export function createCast(images: readonly string[]): Cast {
     ctx.rotate(lean);
     ctx.scale(scale * (1 - stretch * 0.6), scale * (1 + stretch));
     ctx.translate(-CHARACTER_SPRITE.neckX, -CHARACTER_SPRITE.baseline);
-    if (member.outline) drawFigure(ctx, member.outline, pose, tilt, OUTLINE_SHEET_SCALE);
-    drawFigure(ctx, member.image, pose, tilt);
+    function drawPose(context: CanvasRenderingContext2D, value: CharacterPose): void {
+      if (member.outline) {
+        drawFigure(context, member.outline, value, tilt, OUTLINE_SHEET_SCALE);
+      }
+      if (member.image) drawFigure(context, member.image, value, tilt);
+    }
+
+    if (sadWeight === 0) drawPose(ctx, pose);
+    else if (sadWeight === 1 || !blendContext || !poseContext) drawPose(ctx, 'sad');
+    else {
+      const { panelWidth, panelHeight } = CHARACTER_SPRITE;
+      blendContext.clearRect(0, 0, panelWidth, panelHeight);
+      blendContext.save();
+      // Blend complete figures, so overlapping body/head/outline layers keep their opacity.
+      for (const value of [pose, 'sad'] satisfies CharacterPose[]) {
+        poseContext.clearRect(0, 0, panelWidth, panelHeight);
+        drawPose(poseContext, value);
+        blendContext.globalAlpha = value === 'sad' ? sadWeight : 1 - sadWeight;
+        blendContext.drawImage(poseCanvas, 0, 0);
+        blendContext.globalCompositeOperation = 'lighter';
+      }
+      blendContext.restore();
+      ctx.drawImage(blend, 0, 0);
+    }
     ctx.restore();
   }
 
   return {
-    update(dt, progress, completed) {
+    activity: state.activity,
+    update(dt, progress, completed, idleDt = dt) {
+      state.update(dt, progress, completed, idleDt);
       if (completed) sinceComplete = (sinceComplete ?? 0) + dt;
       for (const member of members) {
-        const calmAt = member.wailing ? member.breaksAt - CALM_MARGIN : member.breaksAt;
-        const wailing = completed || progress >= calmAt;
-        if (wailing !== member.wailing) {
-          member.wailing = wailing;
-          member.sinceSwitch = 0;
-        }
-        member.sinceSwitch += dt;
         if (member.image) member.shownFor += dt;
       }
     },
     draw(ctx, area, time) {
       place(area);
-      for (const index of drawOrder) drawMember(ctx, members[index], placements[index], time);
+      for (const index of drawOrder)
+        drawMember(ctx, members[index], index, placements[index], time);
     },
     destroy() {
       destroyed = true;

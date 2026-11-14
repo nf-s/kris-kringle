@@ -26,7 +26,12 @@ from the draw. Deleting a character removes it from every event.
 
 On a reveal page the event's characters kneel in a ring round the object, praying. As the person
 works through the task they switch to wailing one at a time, and they all jig once the name is
-out. They stand behind the object, so each reveal reports the space its object takes up
+out. After four seconds without activity, they become comically sad one at a time, two seconds
+apart. Touching or moving the object restores the pose for the current progress. This starts
+only after the first interaction, pauses while the tab is hidden, and stops once the reveal is
+complete. Reduced motion keeps the state changes but removes the animated transitions.
+
+They stand behind the object, so each reveal reports the space its object takes up
 (`footprint`) and nobody is placed where it would cover their face; on a narrow screen the ring
 turns squarer and the figures smaller until everyone fits. A reveal link only ever serves the
 characters attached to its own event, and never their names. Previews at `/preview/<kind>` show
@@ -87,5 +92,7 @@ The Worker reads the password from the `ADMIN_PASSWORD` secret.
   `cast.ts` places and animates the characters, `motion.ts` reads the phone's own movement,
   `draw.ts` has the shared drawing helpers including the ink outline every object is drawn with.
 - `src/characters/` — `import.ts` builds a character's sprite sheet in the browser from the
-  imported artwork, `sprite.ts` draws one. A sheet is two rows (praying, wailing) of three
+  imported artwork, `sprite.ts` draws one. A sheet is three rows (praying, wailing, sad) of three
   384×480 panels (body, head, parts in front of the head); the sizes are in `shared/schema.ts`.
+  Old two-row sheets and manifests without a sad pose remain supported, using prayer as the
+  fallback. Artwork stays in the character library rather than the source repository.

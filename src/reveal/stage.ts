@@ -64,6 +64,14 @@ export function createStage(options: StageOptions): StageHandle {
   let lastTimestamp: number | null = null;
   /** Only the first finger down is tracked; extra touches are ignored. */
   let activePointer: number | null = null;
+  let pointerPosition: Point | null = null;
+  let activitySinceFrame = false;
+
+  function activity(): void {
+    if (document.hidden || completedAt !== null) return;
+    cast?.activity();
+    activitySinceFrame = true;
+  }
 
   const stage: Stage = {
     get width() {
@@ -90,7 +98,9 @@ export function createStage(options: StageOptions): StageHandle {
     },
     setHint: options.onHint,
     setProgress(value) {
-      progress = clamp(value, 0, 1);
+      const next = clamp(value, 0, 1);
+      if (next > progress) activity();
+      progress = next;
       options.onProgress(progress);
     },
     complete(origin) {
@@ -150,13 +160,22 @@ export function createStage(options: StageOptions): StageHandle {
     sfx.unlock();
     if (activePointer !== null) return;
     activePointer = event.pointerId;
+    pointerPosition = toPoint(event);
+    activity();
     canvas.setPointerCapture(event.pointerId);
-    reveal.onPointerDown?.(toPoint(event));
+    reveal.onPointerDown?.(pointerPosition);
   }
 
   function handleMove(event: PointerEvent): void {
     if (activePointer !== null && event.pointerId !== activePointer) return;
-    reveal.onPointerMove?.(toPoint(event), activePointer !== null);
+    const point = toPoint(event);
+    if (activePointer !== null) {
+      if (pointerPosition && (point.x !== pointerPosition.x || point.y !== pointerPosition.y)) {
+        activity();
+      }
+      pointerPosition = point;
+    }
+    reveal.onPointerMove?.(point, activePointer !== null);
   }
 
   function handleUp(event: PointerEvent): void {
@@ -164,12 +183,18 @@ export function createStage(options: StageOptions): StageHandle {
     sfx.unlock();
     if (event.pointerId !== activePointer) return;
     activePointer = null;
+    pointerPosition = null;
     reveal.onPointerUp?.(toPoint(event));
   }
 
   /** Stops the browser scrolling, zooming or opening a menu while someone is playing. */
   function suppress(event: Event): void {
     event.preventDefault();
+  }
+
+  function visibilityChanged(): void {
+    // The first visible frame must not include time spent in a background tab.
+    lastTimestamp = null;
   }
 
   function emitConfetti(dt: number): void {
@@ -232,7 +257,8 @@ export function createStage(options: StageOptions): StageHandle {
     frame = requestAnimationFrame(tick);
     const context = ctx;
     if (!context) return;
-    const dt = lastTimestamp === null ? 0.016 : Math.min(0.033, (timestamp - lastTimestamp) / 1000);
+    const elapsed = lastTimestamp === null ? 0 : Math.max(0, (timestamp - lastTimestamp) / 1000);
+    const dt = lastTimestamp === null ? 0.016 : Math.min(0.033, elapsed);
     lastTimestamp = timestamp;
     time += dt;
 
@@ -245,7 +271,14 @@ export function createStage(options: StageOptions): StageHandle {
     }
     options.motion.advance(dt);
     reveal.update(dt);
-    cast?.update(dt, progress, completedAt !== null);
+    // A press or a phone-driven progress increase this frame starts a fresh grace period.
+    cast?.update(
+      dt,
+      progress,
+      completedAt !== null,
+      document.hidden || activitySinceFrame ? 0 : elapsed,
+    );
+    activitySinceFrame = false;
     emitConfetti(dt);
     particles.update(dt);
     shakeAmount *= Math.pow(0.002, dt);
@@ -277,6 +310,7 @@ export function createStage(options: StageOptions): StageHandle {
   canvas.addEventListener('touchstart', suppress, { passive: false });
   canvas.addEventListener('contextmenu', suppress);
   document.addEventListener('gesturestart', suppress);
+  document.addEventListener('visibilitychange', visibilityChanged);
   window.addEventListener('resize', resize);
   frame = requestAnimationFrame(tick);
 
@@ -290,6 +324,7 @@ export function createStage(options: StageOptions): StageHandle {
       canvas.removeEventListener('touchstart', suppress);
       canvas.removeEventListener('contextmenu', suppress);
       document.removeEventListener('gesturestart', suppress);
+      document.removeEventListener('visibilitychange', visibilityChanged);
       window.removeEventListener('resize', resize);
       cast?.destroy();
     },

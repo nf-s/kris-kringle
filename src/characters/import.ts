@@ -35,13 +35,20 @@ type Polygon = z.infer<typeof polygonSchema>;
  * One pose in the artwork. `rectangle` is the figure's place in the image (x, y, width, height);
  * the polygons are measured from that rectangle's top-left corner.
  */
-const poseSchema = z.object({
-  path: z.string().min(1),
-  rectangle: z.tuple([z.number(), z.number(), z.number().positive(), z.number().positive()]),
-  head: z.object({ points: polygonSchema, neckY: z.number().positive() }),
-  /** Parts of the body, such as raised arms, that pass in front of the head. */
-  foreground: z.union([polygonSchema, z.array(polygonSchema)]).optional(),
-});
+const poseSchema = z
+  .object({
+    path: z.string().min(1),
+    rectangle: z.tuple([
+      z.number().nonnegative(),
+      z.number().nonnegative(),
+      z.number().positive(),
+      z.number().positive(),
+    ]),
+    head: z.object({ points: polygonSchema, neckY: z.number().positive() }),
+    /** Parts of the body, such as raised arms, that pass in front of the head. */
+    foreground: z.union([polygonSchema, z.array(polygonSchema)]).optional(),
+  })
+  .refine((pose) => pose.head.neckY < pose.rectangle[3]);
 type Pose = z.infer<typeof poseSchema>;
 
 const manifestSchema = z.object({
@@ -49,7 +56,7 @@ const manifestSchema = z.object({
     .array(
       z.object({
         name: characterNameSchema,
-        poses: z.object({ praying: poseSchema, wailing: poseSchema }),
+        poses: z.object({ praying: poseSchema, wailing: poseSchema, sad: poseSchema.optional() }),
       }),
     )
     .min(1),
@@ -201,25 +208,34 @@ export async function importCharacters(files: readonly File[]): Promise<Imported
   }
 
   const imported: ImportedCharacter[] = [];
-  for (const character of manifest.data.characters) {
-    const canvas = new OffscreenCanvas(SPRITE_WIDTH, SPRITE_HEIGHT);
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new CharacterImportError('This browser cannot draw the sprites.');
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    for (const row of CHARACTER_POSES) {
-      const pose = character.poses[row];
-      let image: ImageBitmap;
-      try {
-        image = await loadImage(pose.path);
-      } catch (error) {
-        if (error instanceof CharacterImportError) throw error;
-        throw new CharacterImportError(`${pose.path} could not be read as an image.`);
+  try {
+    for (const character of manifest.data.characters) {
+      const canvas = new OffscreenCanvas(SPRITE_WIDTH, SPRITE_HEIGHT);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new CharacterImportError('This browser cannot draw the sprites.');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      for (const row of CHARACTER_POSES) {
+        const pose = character.poses[row] ?? character.poses.praying;
+        let image: ImageBitmap;
+        try {
+          image = await loadImage(pose.path);
+        } catch (error) {
+          if (error instanceof CharacterImportError) throw error;
+          throw new CharacterImportError(`${pose.path} could not be read as an image.`);
+        }
+        const [x, y, width, height] = pose.rectangle;
+        if (x + width > image.width || y + height > image.height) {
+          throw new CharacterImportError(`${pose.path} is smaller than its figure rectangle.`);
+        }
+        drawPose(ctx, image, pose, row);
       }
-      drawPose(ctx, image, pose, row);
+      imported.push({ name: character.name, sprite: await encode(canvas) });
     }
-    imported.push({ name: character.name, sprite: await encode(canvas) });
+  } finally {
+    for (const image of await Promise.allSettled(images.values())) {
+      if (image.status === 'fulfilled') image.value.close();
+    }
   }
-  for (const loading of images.values()) (await loading).close();
   return imported;
 }
