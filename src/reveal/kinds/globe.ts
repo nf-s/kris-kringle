@@ -23,6 +23,13 @@ const SHAKE_THRESHOLD = 260;
 /** Charge only counts this long after the pointer last reversed direction. */
 const REVERSAL_WINDOW = 0.35;
 const REVERSAL_SEGMENT = 8;
+/** Shaking the phone counts from this many m/s² and is at full strength `PHONE_SHAKE_RANGE` on. */
+const PHONE_SHAKE_START = 4;
+const PHONE_SHAKE_RANGE = 12;
+/** Movement of the phone weaker than this is not an attempt at shaking. */
+const PHONE_STIR = 1.5;
+/** How hard the globe is thrown about by the phone's own movement. */
+const PHONE_PUSH = 700;
 const STAGES = 3;
 const STAGE_FLOURISHES: readonly (readonly number[])[] = [
   [2, 4, 7],
@@ -639,7 +646,7 @@ export const createGlobe: RevealFactory = (stage) => {
   let hopVelocity = 0;
   let giftX = -0.56;
   let giftVelocity = 0;
-  let hint = 'Shake the snow globe';
+  let hint = idleHint();
   let nextWiggle = 2.5;
   let poppedAt: number | null = null;
   let completeSent = false;
@@ -662,6 +669,10 @@ export const createGlobe: RevealFactory = (stage) => {
       reachUp: clamp(cy - radius * 0.9 - 12, 16, reach),
       reachDown: clamp(stage.height - 12 - (cy + radius * 1.4), 16, reach),
     };
+  }
+
+  function idleHint(): string {
+    return stage.motion.active ? 'Shake your phone or the globe' : 'Shake the snow globe';
   }
 
   function showHint(text: string): void {
@@ -888,9 +899,11 @@ export const createGlobe: RevealFactory = (stage) => {
   function updateShake(dt: number, l: Layout): void {
     speed = lerp(speed, travel / dt / l.unit, 1 - Math.exp(-dt * 10));
     travel = 0;
-    intensity = grab === null ? 0 : clamp((speed - SHAKE_THRESHOLD) / 900, 0, 1);
+    const dragged = grab === null ? 0 : clamp((speed - SHAKE_THRESHOLD) / 900, 0, 1);
+    const phone = clamp((stage.motion.force - PHONE_SHAKE_START) / PHONE_SHAKE_RANGE, 0, 1);
+    intensity = Math.max(dragged, phone);
     const reversing = stage.time - lastReversal < REVERSAL_WINDOW;
-    const shaking = intensity > 0.05 && reversing;
+    const shaking = intensity > 0.05 && (reversing || phone > 0.05);
     if (shaking) {
       charge += (intensity * dt) / CHARGE_TIME;
       lastChargeAt = stage.time;
@@ -904,11 +917,12 @@ export const createGlobe: RevealFactory = (stage) => {
       stage.setProgress(charge);
     }
 
-    weakFor = grab !== null && speed > 60 && !shaking ? weakFor + dt : 0;
+    const trying = (grab !== null && speed > 60) || stage.motion.force > PHONE_STIR;
+    weakFor = trying && !shaking ? weakFor + dt : 0;
     if (weakFor > 0.4) showHint(intensity > 0.05 ? 'Shake back and forth' : 'Shake harder');
     else if (charge > 0.75) showHint('Nearly there');
     else if (charge > 0 && (shaking || grab === null)) showHint('Keep shaking');
-    else if (charge === 0 && grab === null) showHint('Shake the snow globe');
+    else if (charge === 0 && grab === null) showHint(idleHint());
 
     jingle += intensity * dt;
     if (jingle > 0.16) {
@@ -1023,6 +1037,10 @@ export const createGlobe: RevealFactory = (stage) => {
     update(dt) {
       if (dt <= 0) return;
       const l = layout();
+      if (grab === null && poppedAt === null) {
+        offsetX.velocity += stage.motion.push.x * PHONE_PUSH * l.unit * dt;
+        offsetY.velocity += stage.motion.push.y * PHONE_PUSH * l.unit * dt;
+      }
       offsetX.update(dt);
       offsetY.update(dt);
       tilt.target = clamp(

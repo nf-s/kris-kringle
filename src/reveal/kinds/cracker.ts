@@ -27,6 +27,8 @@ const STRAIN_START = 0.45;
 const EDGE_MARGIN = 14;
 const TAP_TIME = 0.35;
 const TAP_SLOP = 10;
+/** How far, in design units, an end jumps out when a flick of the phone pulls it. */
+const FLICK_STRETCH = 60;
 
 /** Design units along the cracker's axis, measured from its centre. */
 const REST_SPAN = 330;
@@ -383,11 +385,15 @@ export const createCracker: RevealFactory = (stage) => {
   let nextRattle = 0;
   let hint = '';
   let shownProgress = 0;
+  /** End pulled by the last flick that had no sideways direction. */
+  let flickSide = -1;
 
   function showHint(): void {
     const total = totalTear();
-    const next =
-      total < SLIP_AT * 0.9 ? 'Pull one end' : total < 0.55 ? 'Pull harder' : 'Nearly there';
+    const flicking = stage.motion.active;
+    const start = flicking ? 'Flick your phone or pull one end' : 'Pull one end';
+    const middle = flicking ? 'Keep going' : 'Pull harder';
+    const next = total < SLIP_AT * 0.9 ? start : total < 0.55 ? middle : 'Nearly there';
     if (next === hint) return;
     hint = next;
     stage.setHint(next);
@@ -542,6 +548,21 @@ export const createCracker: RevealFactory = (stage) => {
     showProgress();
     if (totalTear() >= 1) snap(l, g.side);
     else if (g.gained >= SLIP_AT - 0.0001) slip(l, g);
+  }
+
+  /**
+   * A flick of the phone tears as much as one full pull: on the end it was flicked towards, or
+   * on each end in turn when it had no sideways direction.
+   */
+  function tug(flick: Point, l: Layout): void {
+    if (flick.x === 0) flickSide = -flickSide;
+    const side = flick.x === 0 ? flickSide : Math.sign(flick.x);
+    damageOf(side).amount += Math.min(SLIP_AT, 1 - totalTear());
+    const held = stretchOf(side);
+    held.value = Math.max(held.value, FLICK_STRETCH);
+    showProgress();
+    if (totalTear() >= 1 - 0.0001) snap(l, side);
+    else slip(l, { kind: 'end', side, anchor: 0, full: 1, pull: 0, gained: SLIP_AT });
   }
 
   function relax(damage: Damage, dt: number): void {
@@ -740,6 +761,11 @@ export const createCracker: RevealFactory = (stage) => {
         stretchOf(-grab.side).update(dt);
         strain(l, grab, dt);
         return;
+      }
+      showHint();
+      if (stage.motion.flick) {
+        tug(stage.motion.flick, l);
+        if (snapped !== null) return;
       }
       leftStretch.update(dt);
       rightStretch.update(dt);

@@ -764,7 +764,8 @@ td {
   transition: transform 0.18s ease-out;
 }
 
-.reveal__sound {
+.reveal__sound,
+.reveal__motion {
   position: absolute;
   top: calc(env(safe-area-inset-top) + 14px);
   right: 14px;
@@ -778,6 +779,10 @@ td {
   border-radius: 999px;
   padding: 6px 12px;
   cursor: pointer;
+}
+
+.reveal__motion {
+  top: calc(env(safe-area-inset-top) + 50px);
 }
 
 .reveal__badge {

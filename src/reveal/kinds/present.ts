@@ -92,10 +92,11 @@ interface Opened {
   lidSide: number;
 }
 
-function hintFor(notches: number): string {
-  if (notches === 0) return 'Pull the ribbon';
-  if (notches === 1) return 'Pull again';
-  return 'One more pull';
+/** `flicking` is whether flicking the phone pulls the ribbon too. */
+function hintFor(notches: number, flicking: boolean): string {
+  if (notches === 0) return flicking ? 'Flick your phone or pull the ribbon' : 'Pull the ribbon';
+  if (notches === 1) return flicking ? 'Flick or pull again' : 'Pull again';
+  return flicking ? 'One more flick or pull' : 'One more pull';
 }
 
 /** Soft limit: follows `value` near zero and eases towards `range`. */
@@ -468,8 +469,16 @@ export const createPresent: RevealFactory = (stage) => {
   let lastThud = -1;
   let lastClack = -1;
   let lastRattle = -1;
+  let hint = '';
 
-  stage.setHint(hintFor(0));
+  function showHint(): void {
+    const text = opened === null ? hintFor(notches, stage.motion.active) : '';
+    if (text === hint) return;
+    hint = text;
+    stage.setHint(text);
+  }
+
+  showHint();
 
   function layout(): Layout {
     const scale = clamp(Math.min(stage.width / 420, stage.height / 640), 0.55, 1.5);
@@ -638,7 +647,7 @@ export const createPresent: RevealFactory = (stage) => {
     stage.sfx.pop();
     stage.shake(16);
     stage.haptic([20, 30, 60]);
-    stage.setHint('');
+    showHint();
     stage.setProgress(1);
     stage.particles.burst({
       x: knot.x,
@@ -699,7 +708,16 @@ export const createPresent: RevealFactory = (stage) => {
     boing.velocity += 2.5;
     lidLift.velocity -= 120;
     stage.setProgress(notches / NOTCHES);
-    stage.setHint(hintFor(notches));
+    showHint();
+  }
+
+  /** A flick of the phone pulls the ribbon out one notch, towards wherever the flick went. */
+  function yank(flick: Point, l: Layout): void {
+    ribbonTouched = true;
+    const length = Math.hypot(flick.x, Math.max(0.5, Math.abs(flick.y)));
+    pullX.value = (flick.x / length) * l.base * 0.8;
+    pullY.value = (Math.max(0.5, Math.abs(flick.y)) / length) * l.base * 0.8;
+    giveNotch(l);
   }
 
   function grabRibbon(point: Point, l: Layout): void {
@@ -950,6 +968,10 @@ export const createPresent: RevealFactory = (stage) => {
       tasselY.target = by;
       tasselX.update(dt);
       tasselY.update(dt);
+      showHint();
+      if (opened === null && stage.motion.flick && !(grab !== null && grab.kind === 'ribbon')) {
+        yank(stage.motion.flick, l);
+      }
       if (opened === null) {
         if (grab !== null && grab.kind === 'ribbon') {
           const follow = Math.min(1, dt * 22);

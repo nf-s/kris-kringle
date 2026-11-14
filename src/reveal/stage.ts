@@ -1,6 +1,7 @@
 import { createCast, type CastArea } from './cast';
 import { CONFETTI_COLORS, clamp, rand } from './draw';
 import type { Point, Reveal, RevealFactory, Stage } from './engine';
+import type { MotionSensor } from './motion';
 import { createParticles } from './particles';
 import type { Sfx } from './sfx';
 
@@ -19,6 +20,7 @@ export interface StageOptions {
   receiverName: string;
   factory: RevealFactory;
   sfx: Sfx;
+  motion: MotionSensor;
   onHint(text: string): void;
   onProgress(value: number): void;
   onComplete(): void;
@@ -79,6 +81,7 @@ export function createStage(options: StageOptions): StageHandle {
     receiverName: options.receiverName,
     particles,
     sfx,
+    motion: options.motion.motion,
     shake(amount) {
       shakeAmount = Math.min(30, shakeAmount + amount);
     },
@@ -240,6 +243,7 @@ export function createStage(options: StageOptions): StageHandle {
         flake.x = Math.random();
       }
     }
+    options.motion.advance(dt);
     reveal.update(dt);
     cast?.update(dt, progress, completedAt !== null);
     emitConfetti(dt);

@@ -28,6 +28,8 @@ const FREEZE_TIME = 0.25;
 const COMPLETE_DELAY = 0.5;
 const EXIT_TIME = 0.55;
 const TAP_SLOP = 8;
+/** Turns of the handle for each turn of the phone, which is twisted back and forth by the wrist. */
+const PHONE_WIND = 1.5;
 /** Original music-box loop, in pentatonic steps. */
 const MELODY: readonly number[] = [
   4, 6, 7, 6, 4, 2, 3, 4, 7, 9, 8, 7, 6, 4, 5, 4, 2, 4, 3, 1, 2, 4, 6, 5,
@@ -531,8 +533,10 @@ export const createJack: RevealFactory = (stage) => {
   let clickTravel = 0;
   let unwindTravel = 0;
   let shiver = 0;
+  /** True in a frame where twisting the phone turned the handle. */
+  let twisting = false;
   let shown = 0;
-  let hint = 'Turn the handle';
+  let hint = idleHint();
   let nextTease = 3.5;
   let frozenAt: number | null = null;
   let poppedAt: number | null = null;
@@ -547,6 +551,10 @@ export const createJack: RevealFactory = (stage) => {
       floorY: stage.height * 0.5 + 105 * scale,
       scale,
     };
+  }
+
+  function idleHint(): string {
+    return stage.motion.active ? 'Twist your phone or turn the handle' : 'Turn the handle';
   }
 
   function showHint(text: string): void {
@@ -745,7 +753,7 @@ export const createJack: RevealFactory = (stage) => {
       }
     }
     const t = tension();
-    const active = grab === 'knob' && idleFor < 0.25;
+    const active = (grab === 'knob' || twisting) && idleFor < 0.25;
     shiver = lerp(shiver, active ? t * t : t * t * 0.15, 1 - Math.exp(-dt * 8));
     if (active && t > 0.5) stage.sfx.stretch((t - 0.5) * 1.4);
     if (Math.abs(t - shown) > 0.003) {
@@ -755,7 +763,16 @@ export const createJack: RevealFactory = (stage) => {
     if (decaying) showHint('Keep winding');
     else if (t > 0.75) showHint('Nearly there');
     else if (wound > 0) showHint('Keep winding');
-    else showHint('Turn the handle');
+    else showHint(idleHint());
+  }
+
+  /** Twisting the phone either way turns the handle forwards. */
+  function windByPhone(): void {
+    const turn = stage.motion.turned * PHONE_WIND;
+    twisting = turn > 0;
+    if (!twisting) return;
+    arm += turn;
+    wind(turn);
   }
 
   /** Centre of the handle's knob, in design units. It trembles as the spring tightens. */
@@ -935,6 +952,7 @@ export const createJack: RevealFactory = (stage) => {
         return;
       }
       updateIdle(dt);
+      windByPhone();
       updateWinding(dt);
     },
     draw(ctx) {

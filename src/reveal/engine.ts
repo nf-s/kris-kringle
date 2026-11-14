@@ -1,3 +1,4 @@
+import type { Motion } from './motion';
 import type { Particles } from './particles';
 import type { Sfx } from './sfx';
 
@@ -20,6 +21,11 @@ export interface Stage {
   /** Shared particle system, drawn above the reveal. */
   readonly particles: Particles;
   readonly sfx: Sfx;
+  /**
+   * Movement of the phone itself, as a second way to do what the pointer does. A reveal must stay
+   * fully playable by pointer alone: not every device reports movement or is allowed to.
+   */
+  readonly motion: Motion;
   /** Adds screen shake, in pixels. Decays on its own. */
   shake(amount: number): void;
   haptic(pattern: number | number[]): void;

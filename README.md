@@ -29,6 +29,13 @@ works through the task they switch to wailing one at a time, and they all jig on
 out. A reveal link only ever serves the characters attached to its own event, and never their
 names. Previews at `/preview/<kind>` show no characters.
 
+On a phone each reveal can also be done by moving the phone: shake it for the snow globe, twist
+it back and forth for the jack-in-the-box, rock it from side to side for the egg, and flick it
+for the present and the cracker. The hint under the object names both ways once the phone is
+reporting its movement, and everything still works by touch alone. A "Motion on / Motion off"
+button appears under the sound button on phones that report movement; on an iPhone it starts
+off, and turning it on brings up the system's permission prompt.
+
 The draw prefers one loop through the whole group. If exclusions rule that out it falls back to
 smaller loops, and reports an error if no draw fits.
 
@@ -54,13 +61,13 @@ The Worker reads the password from the `ADMIN_PASSWORD` secret.
 
 ## Commands
 
-| Command             | Purpose                           |
-| ------------------- | --------------------------------- |
-| `npm run dev`       | Local dev server (Vite + workerd) |
-| `npm test`          | Unit tests for the draw and API   |
-| `npm run typecheck` | TypeScript, front end and Worker  |
-| `npm run format`    | Prettier                          |
-| `npm run deploy`    | Build and deploy to Cloudflare    |
+| Command             | Purpose                             |
+| ------------------- | ----------------------------------- |
+| `npm run dev`       | Local dev server (Vite + workerd)   |
+| `npm test`          | Unit tests: draw, API, phone motion |
+| `npm run typecheck` | TypeScript, front end and Worker    |
+| `npm run format`    | Prettier                            |
+| `npm run deploy`    | Build and deploy to Cloudflare      |
 
 ## Layout
 
@@ -71,8 +78,8 @@ The Worker reads the password from the `ADMIN_PASSWORD` secret.
 - `src/admin/` — admin page. `exclusions.ts` is the exclusion grid, `activity.ts` the chart,
   `characters.ts` the character library and each event's character picker.
 - `src/reveal/` — reveal page. `stage.ts` runs the canvas loop, `kinds/` has one file per reveal,
-  `cast.ts` places and animates the characters, `draw.ts` has the shared drawing helpers
-  including the ink outline every object is drawn with.
+  `cast.ts` places and animates the characters, `motion.ts` reads the phone's own movement,
+  `draw.ts` has the shared drawing helpers including the ink outline every object is drawn with.
 - `src/characters/` — `import.ts` builds a character's sprite sheet in the browser from the
   imported artwork, `sprite.ts` draws one. A sheet is two rows (praying, wailing) of three
   384×480 panels (body, head, parts in front of the head); the sizes are in `shared/schema.ts`.

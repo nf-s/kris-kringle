@@ -6,6 +6,7 @@ import {
 } from '../../shared/schema';
 import { ApiError, castImagePath, fetchReveal, markOpened, markViewed } from '../api';
 import { button, h } from '../dom';
+import { createMotionSensor, type MotionSensor } from './motion';
 import { REVEAL_FACTORIES } from './registry';
 import { createSfx, type Sfx } from './sfx';
 import { createStage, type StageCast } from './stage';
@@ -52,9 +53,10 @@ function renderMessage(root: HTMLElement, text: string): void {
   root.replaceChildren(h('main', { class: 'reveal reveal--message' }, h('p', {}, text)));
 }
 
-/** Carried across replays so sound stays unlocked and the mute choice sticks. */
+/** Carried across replays so sound stays unlocked and the mute and motion choices stick. */
 interface Session {
   sfx: Sfx;
+  motion: MotionSensor;
   muted: boolean;
   /** True once the name has been revealed and the person is trying another reveal. */
   replay: boolean;
@@ -108,6 +110,15 @@ function start(
     sound.textContent = session.muted ? 'Sound off' : 'Sound on';
   });
 
+  const { motion } = session;
+  const motionToggle = button('', 'reveal__motion', () => motion.toggle());
+  function showMotion(): void {
+    motionToggle.hidden = motion.state === 'unavailable';
+    motionToggle.textContent = motion.state === 'on' ? 'Motion on' : 'Motion off';
+  }
+  motion.onChange = showMotion;
+  showMotion();
+
   const footer = h(
     'footer',
     { class: 'reveal__footer' },
@@ -137,6 +148,7 @@ function start(
     canvas,
     header,
     sound,
+    motionToggle,
     ...(source.type === 'token' && source.preview
       ? [h('p', { class: 'reveal__badge' }, 'Preview: not recorded')]
       : []),
@@ -151,6 +163,7 @@ function start(
     receiverName: data.receiverName,
     factory: REVEAL_FACTORIES[data.reveal],
     sfx,
+    motion,
     onHint(text) {
       hint.textContent = text;
     },
@@ -173,7 +186,12 @@ function start(
 export function mountReveal(root: HTMLElement, source: RevealSource): void {
   document.body.className = 'reveal-body';
 
-  const session: Session = { sfx: createSfx(), muted: false, replay: false };
+  const session: Session = {
+    sfx: createSfx(),
+    motion: createMotionSensor(),
+    muted: false,
+    replay: false,
+  };
 
   if (source.type === 'preview') {
     start(root, source, previewData(source.reveal), session);
