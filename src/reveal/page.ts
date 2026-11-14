@@ -4,14 +4,15 @@ import {
   type RevealKind,
   type RevealResponse,
 } from '../../shared/schema';
-import { ApiError, fetchReveal, markOpened } from '../api';
+import { ApiError, fetchReveal, markOpened, markViewed } from '../api';
 import { button, h } from '../dom';
 import { REVEAL_FACTORIES } from './registry';
 import { createSfx, type Sfx } from './sfx';
 import { createStage } from './stage';
 
+/** A token source with `preview` set shows the real reveal without recording the visit. */
 export type RevealSource =
-  { type: 'token'; token: string } | { type: 'preview'; reveal: RevealKind };
+  { type: 'token'; token: string; preview: boolean } | { type: 'preview'; reveal: RevealKind };
 
 const CARD_DELAY_MS = 380;
 const LETTER_STAGGER_MS = 55;
@@ -103,6 +104,9 @@ function start(
       h('h1', {}, `Hi ${data.giverName}`),
     ),
     sound,
+    ...(source.type === 'token' && source.preview
+      ? [h('p', { class: 'reveal__badge' }, 'Preview: not recorded')]
+      : []),
     h('footer', { class: 'reveal__footer' }, hint, h('div', { class: 'progress' }, progressBar)),
     card,
   );
@@ -124,7 +128,7 @@ function start(
       window.setTimeout(() => {
         card.hidden = false;
       }, CARD_DELAY_MS);
-      if (source.type === 'token' && !session.replay) {
+      if (source.type === 'token' && !source.preview && !session.replay) {
         // Only affects the admin's "opened" column, so a failure here is safe to ignore.
         markOpened(source.token).catch(() => undefined);
       }
@@ -144,10 +148,16 @@ export function mountReveal(root: HTMLElement, source: RevealSource): void {
 
   renderMessage(root, 'Loading');
   fetchReveal(source.token).then(
-    (data) => start(root, source, data, session),
+    (data) => {
+      start(root, source, data, session);
+      // Only feeds the admin's activity chart, so a failure here is safe to ignore.
+      if (!source.preview) markViewed(source.token).catch(() => undefined);
+    },
     (error: unknown) => {
       if (error instanceof ApiError && error.status === 409) {
         renderMessage(root, 'Names have not been drawn yet. Try this link again later.');
+      } else if (error instanceof ApiError && error.status === 429) {
+        renderMessage(root, 'Too many attempts. Try again in 15 minutes.');
       } else if (error instanceof ApiError && error.status === 404) {
         renderMessage(root, 'This link is not valid. Ask the organiser for a new one.');
       } else {

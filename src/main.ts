@@ -7,7 +7,8 @@ function route(root: HTMLElement): void {
   const segments = window.location.pathname.split('/').filter((segment) => segment.length > 0);
 
   if (segments[0] === 'r' && segments.length === 2) {
-    mountReveal(root, { type: 'token', token: decodeURIComponent(segments[1]) });
+    const preview = new URLSearchParams(window.location.search).has('preview');
+    mountReveal(root, { type: 'token', token: decodeURIComponent(segments[1]), preview });
     return;
   }
 
