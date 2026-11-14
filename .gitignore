@@ -5,3 +5,4 @@ dist
 .admin-password.*
 .DS_Store
 /character-prototype/
+/character-prototype-private/
