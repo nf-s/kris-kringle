@@ -78,19 +78,20 @@ function start(
   );
   const hint = h('p', { class: 'reveal__hint', 'aria-live': 'polite' });
   const progressBar = h('div', { class: 'progress__bar' });
+  const panel = h(
+    'div',
+    { class: 'card__panel' },
+    h('p', { class: 'card__label' }, `${data.giverName}, you're buying for`),
+    renderName(data.receiverName),
+    h('div', { class: 'card__rule', 'aria-hidden': 'true' }),
+  );
   const card = h(
     'section',
     { class: 'card', hidden: '' },
     h('div', { class: 'card__rays', 'aria-hidden': 'true' }),
-    h(
-      'div',
-      { class: 'card__panel' },
-      h('p', { class: 'card__label' }, `${data.giverName}, you're buying for`),
-      renderName(data.receiverName),
-      h('div', { class: 'card__rule', 'aria-hidden': 'true' }),
-    ),
+    panel,
   );
-  if (data.note) card.lastElementChild?.append(h('p', { class: 'card__note' }, data.note));
+  if (data.note) panel.append(h('p', { class: 'card__note' }, data.note));
 
   const choices = h('div', { class: 'card__choices' });
   for (const kind of REVEAL_KINDS) {
@@ -102,7 +103,8 @@ function start(
       }),
     );
   }
-  card.append(h('div', { class: 'card__again' }, h('p', {}, 'Try another'), choices));
+  const again = h('div', { class: 'card__again' }, h('p', {}, 'Try another'), choices);
+  card.append(again);
 
   const sound = button(session.muted ? 'Sound off' : 'Sound on', 'reveal__sound', () => {
     session.muted = !session.muted;
@@ -137,16 +139,33 @@ function start(
       band() {
         const stage = canvas.getBoundingClientRect();
         return {
-          top: header.getBoundingClientRect().bottom - stage.top + CAST_MARGIN,
-          bottom: footer.getBoundingClientRect().top - stage.top - CAST_MARGIN,
+          top: card.hidden
+            ? header.getBoundingClientRect().bottom - stage.top + CAST_MARGIN
+            : sound.getBoundingClientRect().bottom - stage.top + CAST_MARGIN,
+          bottom: card.hidden
+            ? footer.getBoundingClientRect().top - stage.top - CAST_MARGIN
+            : again.offsetTop - CAST_MARGIN,
         };
+      },
+      obstacles() {
+        if (card.hidden) return [];
+        // Offset geometry reserves the final panel size throughout its entrance animation.
+        return [
+          {
+            x: panel.offsetLeft + panel.offsetWidth / 2,
+            y: panel.offsetTop + panel.offsetHeight / 2,
+            halfWidth: panel.offsetWidth / 2 + CAST_MARGIN,
+            halfHeight: panel.offsetHeight / 2 + CAST_MARGIN,
+            round: false,
+          },
+        ];
       },
     };
   }
 
   const page = h(
     'main',
-    { class: 'reveal' },
+    { class: cast ? 'reveal reveal--cast' : 'reveal' },
     ...(cast ? [cast.canvas] : []),
     canvas,
     header,
@@ -177,6 +196,7 @@ function start(
       page.classList.add('is-complete');
       window.setTimeout(() => {
         card.hidden = false;
+        stage.refreshLayout();
       }, CARD_DELAY_MS);
       if (source.type === 'token' && !source.preview && !session.replay) {
         // Only affects the admin's "opened" column, so a failure here is safe to ignore.

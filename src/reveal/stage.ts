@@ -1,6 +1,6 @@
 import { createCast } from './cast';
 import { CONFETTI_COLORS, clamp, rand } from './draw';
-import type { Point, Reveal, RevealFactory, Stage } from './engine';
+import type { Point, Reveal, RevealFactory, Shape, Stage } from './engine';
 import type { MotionSensor } from './motion';
 import { createParticles } from './particles';
 import type { Sfx } from './sfx';
@@ -12,6 +12,8 @@ export interface StageCast {
   images: readonly string[];
   /** Top and bottom of the band the cast may stand in, in CSS pixels from the top of the stage. */
   band(): { top: number; bottom: number };
+  /** Opaque interface elements the cast must keep its faces clear of, in stage CSS pixels. */
+  obstacles?(): readonly Shape[];
 }
 
 export interface StageOptions {
@@ -27,6 +29,8 @@ export interface StageOptions {
 }
 
 export interface StageHandle {
+  /** Refreshes the cast's available space after the surrounding interface changes. */
+  refreshLayout(): void;
   destroy(): void;
 }
 
@@ -51,6 +55,7 @@ export function createStage(options: StageOptions): StageHandle {
   if (!ctx || castContext === null) throw new Error('Canvas 2D is not available');
   const cast = options.cast ? createCast(options.cast.images) : null;
   let castBand = { top: 0, bottom: 0 };
+  let castObstacles: readonly Shape[] = [];
 
   const particles = createParticles();
   let width = 0;
@@ -137,7 +142,10 @@ export function createStage(options: StageOptions): StageHandle {
       context.canvas.height = Math.round(height * ratio);
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
     }
-    if (options.cast) castBand = options.cast.band();
+    if (options.cast) {
+      castBand = options.cast.band();
+      castObstacles = options.cast.obstacles?.() ?? [];
+    }
   }
   resize();
 
@@ -299,7 +307,11 @@ export function createStage(options: StageOptions): StageHandle {
       castContext.clearRect(0, 0, width, height);
       castContext.save();
       castContext.translate(shakeX * CAST_SHAKE, shakeY * CAST_SHAKE);
-      cast.draw(castContext, { width, height, ...castBand, object: reveal.footprint() }, time);
+      cast.draw(
+        castContext,
+        { width, height, ...castBand, object: [...reveal.footprint(), ...castObstacles] },
+        time,
+      );
       castContext.restore();
     }
 
@@ -324,6 +336,7 @@ export function createStage(options: StageOptions): StageHandle {
   frame = requestAnimationFrame(tick);
 
   return {
+    refreshLayout: resize,
     destroy() {
       cancelAnimationFrame(frame);
       canvas.removeEventListener('pointerdown', handleDown);

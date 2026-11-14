@@ -48,6 +48,42 @@ describe('placing the cast', () => {
     }
   });
 
+  it('keeps all nineteen full faces clear of the result panel in portrait and landscape', () => {
+    const layouts: CastArea[] = [
+      {
+        width: 390,
+        height: 844,
+        top: 48,
+        bottom: 697,
+        object: [{ x: 195, y: 371.5, halfWidth: 119, halfHeight: 90, round: false }],
+      },
+      {
+        width: 844,
+        height: 390,
+        top: 48,
+        bottom: 295,
+        object: [{ x: 422, y: 170.5, halfWidth: 156, halfHeight: 56.5, round: false }],
+      },
+    ];
+    for (const area of layouts) {
+      const spots = placeCast(19, area);
+      expect(spots).toHaveLength(19);
+      const panel = area.object[0];
+      for (const spot of spots) {
+        // The face extends from 5% down the sprite panel to the neck, not just its centre.
+        const left = spot.x - spot.height * 0.17;
+        const right = spot.x + spot.height * 0.17;
+        const top = spot.baseline - spot.height * 0.9;
+        const chin = spot.baseline - spot.height * 0.55;
+        const overlapWidth =
+          Math.min(right, panel.x + panel.halfWidth) - Math.max(left, panel.x - panel.halfWidth);
+        const overlapHeight =
+          Math.min(chin, panel.y + panel.halfHeight) - Math.max(top, panel.y - panel.halfHeight);
+        expect(overlapWidth > 0 && overlapHeight > 0).toBe(false);
+      }
+    }
+  });
+
   it('keeps every figure on the screen and inside the band', () => {
     const area = phone(GLOBE);
     for (const spot of placeCast(19, area)) {
@@ -304,11 +340,15 @@ function interactiveStage() {
   const down = vi.fn();
   const move = vi.fn();
   const up = vi.fn();
+  const draw = vi.fn<castModule.Cast['draw']>();
+  const band = vi.fn(() => ({ top: 0, bottom: 650 }));
+  const obstacles = vi.fn<() => readonly Shape[]>(() => []);
+  const footprint = vi.fn<() => Shape[]>(() => []);
   vi.spyOn(castModule, 'createCast').mockReturnValue({
     activity,
     toggleAt,
     update,
-    draw: vi.fn(),
+    draw,
     destroy: vi.fn(),
   });
   const canvas = document.createElement('canvas');
@@ -332,7 +372,8 @@ function interactiveStage() {
     cast: {
       canvas: document.createElement('canvas'),
       images: [],
-      band: () => ({ top: 0, bottom: 650 }),
+      band,
+      obstacles,
     },
     receiverName: 'Receiver',
     sfx: createSfx(),
@@ -343,7 +384,7 @@ function interactiveStage() {
     factory(stage) {
       revealStage = stage;
       return {
-        footprint: () => [],
+        footprint,
         update: vi.fn(),
         draw: vi.fn(),
         onPointerDown: down,
@@ -361,6 +402,10 @@ function interactiveStage() {
     down,
     move,
     up,
+    draw,
+    band,
+    obstacles,
+    footprint,
     handle,
     stage(): Stage {
       if (!revealStage) throw new Error('Reveal was not created');
@@ -370,6 +415,39 @@ function interactiveStage() {
 }
 
 describe('stage activity for the cast', () => {
+  it('refreshes the cast band and interface obstacles while retaining the live object footprint', () => {
+    const test = interactiveStage();
+    const panel: Shape = { x: 187, y: 320, halfWidth: 150, halfHeight: 55, round: false };
+    test.footprint.mockReturnValue(GLOBE);
+    test.frame(0);
+    expect(test.draw).toHaveBeenLastCalledWith(
+      expect.anything(),
+      { width: 375, height: 650, top: 0, bottom: 650, object: GLOBE },
+      expect.any(Number),
+    );
+
+    test.band.mockReturnValue({ top: 80, bottom: 520 });
+    test.obstacles.mockReturnValue([panel]);
+    test.handle.refreshLayout();
+    test.frame(16);
+    expect(test.draw).toHaveBeenLastCalledWith(
+      expect.anything(),
+      { width: 375, height: 650, top: 80, bottom: 520, object: [...GLOBE, panel] },
+      expect.any(Number),
+    );
+
+    test.footprint.mockReturnValue(CRACKER);
+    test.frame(32);
+    expect(test.draw).toHaveBeenLastCalledWith(
+      expect.anything(),
+      { width: 375, height: 650, top: 80, bottom: 520, object: [...CRACKER, panel] },
+      expect.any(Number),
+    );
+    expect(test.band).toHaveBeenCalledTimes(2);
+    expect(test.obstacles).toHaveBeenCalledTimes(2);
+    test.handle.destroy();
+  });
+
   it('consumes a character tap and its whole pointer sequence without touching the task', () => {
     const test = interactiveStage();
     test.toggleAt.mockReturnValue(true);

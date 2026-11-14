@@ -36,6 +36,10 @@ priority. Automatic sadness starts only after task activity, pauses while the ta
 and stops once the reveal is complete. Visible characters remain tappable after completion.
 Reduced motion keeps state changes without animated transitions.
 
+After completion, the cast keeps its faces clear of the compact recipient card and stands above
+the replay controls. The card and buttons receive taps above the canvas; characters remain
+interactive outside those controls. The layout updates when the card appears or the screen resizes.
+
 They stand behind the object, so each reveal reports the space its object takes up
 (`footprint`) and nobody is placed where it would cover their face; on a narrow screen the ring
 turns squarer and the figures smaller until everyone fits. A reveal link only ever serves the

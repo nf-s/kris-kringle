@@ -816,7 +816,8 @@ td {
 .card {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  /* The result and replay controls sit above the canvas, which still accepts character taps. */
+  z-index: 4;
   display: grid;
   place-items: center;
   align-content: center;
@@ -952,6 +953,49 @@ td {
 .card__choice:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Leave room around the result for the cast, with replay controls below their band. */
+.reveal--cast .card {
+  grid-template-rows: minmax(0, 1fr) auto;
+  align-content: normal;
+  gap: 16px;
+  padding: calc(env(safe-area-inset-top) + 56px) 16px calc(env(safe-area-inset-bottom) + 20px);
+}
+
+.reveal--cast .card__panel {
+  width: min(480px, 58vw);
+  padding: 20px 14px;
+  border-radius: 20px;
+}
+
+.reveal--cast .card__label {
+  font-size: 12px;
+}
+
+.reveal--cast .card__name {
+  font-size: clamp(22px, calc(min(46vw, 420px) / (var(--longest-word, 6) * 0.66)), 72px);
+}
+
+.reveal--cast .card__rule {
+  width: 64px;
+  height: 4px;
+  margin-top: 12px;
+}
+
+.reveal--cast .card__again {
+  width: min(720px, 100%);
+}
+
+@media (max-height: 500px) {
+  .reveal--cast .card__panel {
+    width: min(300px, 58vw);
+    padding: 12px;
+  }
+
+  .reveal--cast .card__name {
+    font-size: clamp(22px, calc(min(46vw, 250px) / (var(--longest-word, 6) * 0.66)), 40px);
+  }
 }
 
 @keyframes again-in {
