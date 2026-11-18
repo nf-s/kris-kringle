@@ -1,12 +1,16 @@
 import type { z } from 'zod';
 import {
   CHARACTER_POSES,
+  adminListSchema,
   adminStateSchema,
   characterListSchema,
   errorResponseSchema,
   eventListSchema,
   revealResponseSchema,
+  sessionSchema,
+  type AddAdminRequest,
   type AddPeopleRequest,
+  type AdminList,
   type AdminState,
   type CharacterList,
   type CreateEventRequest,
@@ -15,6 +19,7 @@ import {
   type ExclusionsRequest,
   type RevealKind,
   type RevealResponse,
+  type Session,
   type SettingsRequest,
   type UpdatePersonRequest,
 } from '../shared/schema';
@@ -30,7 +35,6 @@ export class ApiError extends Error {
 
 interface RequestOptions {
   method?: string;
-  password?: string;
   body?: unknown;
   /** Sent as multipart/form-data instead of a JSON body. */
   form?: FormData;
@@ -43,7 +47,6 @@ function requestBody(options: RequestOptions): BodyInit | undefined {
 
 async function send(path: string, options: RequestOptions): Promise<Response> {
   const headers = new Headers();
-  if (options.password !== undefined) headers.set('Authorization', `Bearer ${options.password}`);
   if (options.body !== undefined) headers.set('Content-Type', 'application/json');
   const response = await fetch(path, {
     method: options.method ?? 'GET',
@@ -77,63 +80,70 @@ function characterForm(name: string, image?: Blob): FormData {
   return form;
 }
 
-function admin(
-  path: string,
-  password: string,
-  method = 'GET',
-  body?: unknown,
-): Promise<AdminState> {
-  return request(adminStateSchema, path, { method, password, body });
+function admin(path: string, method = 'GET', body?: unknown): Promise<AdminState> {
+  return request(adminStateSchema, path, { method, body });
+}
+
+function adminPath(email = ''): string {
+  return `/api/admin/admins${email ? `/${encodeURIComponent(email)}` : ''}`;
+}
+
+export function fetchSession(): Promise<Session> {
+  return request(sessionSchema, '/api/session', {});
+}
+
+/** Where to send the browser to sign in. `next` is the path to come back to. */
+export function signInPath(next: string): string {
+  return `/auth/google/start?next=${encodeURIComponent(next)}`;
+}
+
+export async function signOut(): Promise<void> {
+  await send('/auth/logout', { method: 'POST' });
 }
 
 export const adminApi = {
-  events: (password: string): Promise<EventList> =>
-    request(eventListSchema, '/api/admin/events', { password }),
-  createEvent: (password: string, body: CreateEventRequest) =>
-    admin('/api/admin/events', password, 'POST', body),
-  deleteEvent: (password: string, eventId: string): Promise<EventList> =>
-    request(eventListSchema, eventPath(eventId), { method: 'DELETE', password }),
-  event: (password: string, eventId: string) => admin(eventPath(eventId), password),
-  saveSettings: (password: string, eventId: string, body: SettingsRequest) =>
-    admin(eventPath(eventId, '/settings'), password, 'PUT', body),
-  addPeople: (password: string, eventId: string, body: AddPeopleRequest) =>
-    admin(eventPath(eventId, '/people'), password, 'POST', body),
-  setReveal: (password: string, eventId: string, id: string, reveal: RevealKind) => {
+  events: (): Promise<EventList> => request(eventListSchema, '/api/admin/events', {}),
+  createEvent: (body: CreateEventRequest) => admin('/api/admin/events', 'POST', body),
+  deleteEvent: (eventId: string): Promise<EventList> =>
+    request(eventListSchema, eventPath(eventId), { method: 'DELETE' }),
+  event: (eventId: string) => admin(eventPath(eventId)),
+  saveSettings: (eventId: string, body: SettingsRequest) =>
+    admin(eventPath(eventId, '/settings'), 'PUT', body),
+  addPeople: (eventId: string, body: AddPeopleRequest) =>
+    admin(eventPath(eventId, '/people'), 'POST', body),
+  setReveal: (eventId: string, id: string, reveal: RevealKind) => {
     const body: UpdatePersonRequest = { reveal };
-    return admin(eventPath(eventId, `/people/${encodeURIComponent(id)}`), password, 'PATCH', body);
+    return admin(eventPath(eventId, `/people/${encodeURIComponent(id)}`), 'PATCH', body);
   },
-  removePerson: (password: string, eventId: string, id: string) =>
-    admin(eventPath(eventId, `/people/${encodeURIComponent(id)}`), password, 'DELETE'),
-  saveExclusions: (password: string, eventId: string, body: ExclusionsRequest) =>
-    admin(eventPath(eventId, '/exclusions'), password, 'PUT', body),
-  draw: (password: string, eventId: string) => admin(eventPath(eventId, '/draw'), password, 'POST'),
-  clearDraw: (password: string, eventId: string) =>
-    admin(eventPath(eventId, '/draw'), password, 'DELETE'),
-  saveEventCharacters: (password: string, eventId: string, body: EventCharactersRequest) =>
-    admin(eventPath(eventId, '/characters'), password, 'PUT', body),
-  characters: (password: string): Promise<CharacterList> =>
-    request(characterListSchema, '/api/admin/characters', { password }),
-  createCharacter: (password: string, name: string, image: Blob): Promise<CharacterList> =>
+  removePerson: (eventId: string, id: string) =>
+    admin(eventPath(eventId, `/people/${encodeURIComponent(id)}`), 'DELETE'),
+  saveExclusions: (eventId: string, body: ExclusionsRequest) =>
+    admin(eventPath(eventId, '/exclusions'), 'PUT', body),
+  draw: (eventId: string) => admin(eventPath(eventId, '/draw'), 'POST'),
+  clearDraw: (eventId: string) => admin(eventPath(eventId, '/draw'), 'DELETE'),
+  saveEventCharacters: (eventId: string, body: EventCharactersRequest) =>
+    admin(eventPath(eventId, '/characters'), 'PUT', body),
+  characters: (): Promise<CharacterList> =>
+    request(characterListSchema, '/api/admin/characters', {}),
+  createCharacter: (name: string, image: Blob): Promise<CharacterList> =>
     request(characterListSchema, '/api/admin/characters', {
       method: 'POST',
-      password,
       form: characterForm(name, image),
     }),
-  updateCharacter: (
-    password: string,
-    id: string,
-    name: string,
-    image?: Blob,
-  ): Promise<CharacterList> =>
+  updateCharacter: (id: string, name: string, image?: Blob): Promise<CharacterList> =>
     request(characterListSchema, characterPath(id), {
       method: 'PUT',
-      password,
       form: characterForm(name, image),
     }),
-  deleteCharacter: (password: string, id: string): Promise<CharacterList> =>
-    request(characterListSchema, characterPath(id), { method: 'DELETE', password }),
-  characterImage: async (password: string, id: string): Promise<Blob> =>
-    (await send(characterPath(id, '/image'), { password })).blob(),
+  deleteCharacter: (id: string): Promise<CharacterList> =>
+    request(characterListSchema, characterPath(id), { method: 'DELETE' }),
+  characterImage: async (id: string): Promise<Blob> =>
+    (await send(characterPath(id, '/image'), {})).blob(),
+  admins: (): Promise<AdminList> => request(adminListSchema, adminPath(), {}),
+  addAdmin: (body: AddAdminRequest): Promise<AdminList> =>
+    request(adminListSchema, adminPath(), { method: 'POST', body }),
+  removeAdmin: (email: string): Promise<AdminList> =>
+    request(adminListSchema, adminPath(email), { method: 'DELETE' }),
 };
 
 export function fetchReveal(token: string): Promise<RevealResponse> {

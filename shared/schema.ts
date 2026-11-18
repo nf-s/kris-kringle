@@ -108,6 +108,27 @@ export type RevealResponse = z.infer<typeof revealResponseSchema>;
 
 export const errorResponseSchema = z.object({ error: z.string() });
 
+export const MAX_ADMINS = 50;
+export const emailSchema = z.string().trim().toLowerCase().pipe(z.email().max(254));
+
+export const sessionSchema = z.object({
+  /** The signed-in admin's email, or null when nobody is signed in. */
+  email: z.string().nullable(),
+  /** True for the admin set in the Worker's configuration, who manages the other admins. */
+  owner: z.boolean(),
+});
+export type Session = z.infer<typeof sessionSchema>;
+
+export const adminListSchema = z.object({
+  owner: z.string(),
+  /** Admins the owner has added, oldest first. */
+  admins: z.array(z.string()),
+});
+export type AdminList = z.infer<typeof adminListSchema>;
+
+export const addAdminRequestSchema = z.object({ email: emailSchema });
+export type AddAdminRequest = z.infer<typeof addAdminRequestSchema>;
+
 export const createEventRequestSchema = z.object({
   title: z.string().trim().min(1).max(80),
 });

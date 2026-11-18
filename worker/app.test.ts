@@ -3,17 +3,27 @@ import {
   MAIN_EVENT_ID,
   MAX_CHARACTERS,
   MAX_CHARACTER_IMAGE_BYTES,
+  adminListSchema,
   adminStateSchema,
   characterListSchema,
   eventListSchema,
   revealResponseSchema,
+  sessionSchema,
 } from '../shared/schema';
 import { createApp, type CharacterRepository, type EventRepository } from './app';
+import { SESSION_SECONDS, sessionKey, type AuthRepository, type StoredSession } from './auth';
 import type { CharacterImage, StoredCharacter } from './characters';
 import { createEmptyEvent, storedEventSchema, type EventRecord, type StoredEvent } from './event';
+import type { IdentityProvider } from './google';
 import { MissLimiter } from './rate-limit';
 
-const PASSWORD = 'test-password';
+const ORIGIN = 'http://localhost';
+const OWNER = 'owner@example.com';
+const HELPER = 'helper@example.com';
+const NOW = 1_000;
+const OWNER_TOKEN = 'owner-session-token';
+const OWNER_COOKIE = `__Host-kk-session=${OWNER_TOKEN}`;
+const OWNER_SESSION_KEY = await sessionKey(OWNER_TOKEN);
 
 /** A stored event shaped like the one saved before multiple events existed. */
 const LEGACY_EVENT = {
@@ -88,23 +98,67 @@ function memoryCharacters(initial: StoredCharacter[]) {
   return { state, images, characters };
 }
 
+/** Starts with the owner signed in. */
+function memoryAuth() {
+  const state: { admins: string[] } = { admins: [] };
+  const sessions = new Map<string, StoredSession>([
+    [OWNER_SESSION_KEY, { email: OWNER, expiresAt: NOW + 60_000 }],
+  ]);
+  const auth: AuthRepository = {
+    async admins() {
+      return [...state.admins];
+    },
+    async saveAdmins(emails) {
+      state.admins = [...emails];
+    },
+    async loadSession(key) {
+      return sessions.get(key) ?? null;
+    },
+    async saveSession(key, session) {
+      sessions.set(key, session);
+    },
+    async removeSession(key) {
+      sessions.delete(key);
+    },
+    async listSessions() {
+      return [...sessions].map(([key, session]) => ({ key, session }));
+    },
+  };
+  return { state, sessions, auth };
+}
+
+/** Stands in for Google: each code signs in as the email it maps to. */
+const CODES = new Map([
+  ['owner-code', OWNER],
+  ['helper-code', HELPER],
+]);
+const identity: IdentityProvider = {
+  authorizationUrl: ({ state, redirectUri }) =>
+    `https://accounts.example/auth?state=${state}&redirect_uri=${encodeURIComponent(redirectUri)}`,
+  verifiedEmail: async ({ code }) => CODES.get(code) ?? null,
+};
+
 function setup(
   initial: Record<string, unknown> = { [MAIN_EVENT_ID]: LEGACY_EVENT },
   initialCharacters: StoredCharacter[] = [],
 ) {
   const { store, repository } = memoryRepository(structuredClone(initial));
   const library = memoryCharacters(initialCharacters);
+  const access = memoryAuth();
+  const clock = { now: NOW };
   const app = createApp({
     repository,
     characters: library.characters,
-    adminPassword: PASSWORD,
+    auth: access.auth,
+    identity,
+    ownerEmail: OWNER,
     limiter: new MissLimiter(3, 60_000),
-    now: () => 1_000,
+    now: () => clock.now,
   });
   async function call(method: string, path: string, body?: unknown, headers: HeadersInit = {}) {
     const init: RequestInit = {
       method,
-      headers: { authorization: `Bearer ${PASSWORD}`, ...headers },
+      headers: { cookie: OWNER_COOKIE, origin: ORIGIN, ...headers },
     };
     if (body !== undefined) {
       init.body = JSON.stringify(body);
@@ -117,11 +171,26 @@ function setup(
     for (const [name, value] of Object.entries(fields)) body.set(name, value);
     return app.request(path, {
       method,
-      headers: { authorization: `Bearer ${PASSWORD}` },
+      headers: { cookie: OWNER_COOKIE, origin: ORIGIN },
       body,
     });
   }
-  return { store, library, call, upload };
+  return { store, library, access, clock, call, upload };
+}
+
+function cookieValue(response: Response, name: string): string {
+  const header = response.headers.getSetCookie().find((cookie) => cookie.startsWith(`${name}=`));
+  return header ? header.slice(name.length + 1).split(';')[0] : '';
+}
+
+/** Goes through sign-in with the given code and returns the response to the callback. */
+async function signIn(call: ReturnType<typeof setup>['call'], code: string, next = '/') {
+  const start = await call('GET', `/auth/google/start?next=${encodeURIComponent(next)}`);
+  const login = cookieValue(start, '__Host-kk-login');
+  const state = new URL(start.headers.get('location') ?? '').searchParams.get('state') ?? '';
+  return call('GET', `/auth/google/callback?code=${code}&state=${state}`, undefined, {
+    cookie: `__Host-kk-login=${login}`,
+  });
 }
 
 function image(bytes: number[], type = 'image/webp'): File {
@@ -224,11 +293,173 @@ describe('events API', () => {
     expect((await call('GET', '/api/reveal/legacyTokenAda0000000AA')).status).toBe(200);
   });
 
-  it('requires the admin password', async () => {
+  it('requires a signed-in admin', async () => {
     const { call } = setup();
     const response = await call('GET', '/api/admin/events', undefined, {
-      authorization: 'Bearer no',
+      cookie: '__Host-kk-session=no',
     });
+    expect(response.status).toBe(401);
+  });
+});
+
+describe('sign-in', () => {
+  it('sends the browser to Google with this site as the callback', async () => {
+    const { call } = setup();
+    const start = await call('GET', '/auth/google/start', undefined, { cookie: '' });
+    expect(start.status).toBe(302);
+    const location = new URL(start.headers.get('location') ?? '');
+    expect(location.origin).toBe('https://accounts.example');
+    expect(location.searchParams.get('redirect_uri')).toBe(`${ORIGIN}/auth/google/callback`);
+    const cookie = start.headers.getSetCookie().find((header) => header.includes('kk-login'));
+    expect(cookie).toContain('HttpOnly');
+    expect(cookie).toContain('Secure');
+    expect(cookie).toContain('SameSite=Lax');
+  });
+
+  it('gives the owner a session and returns to the page they came from', async () => {
+    const { call } = setup();
+    const callback = await signIn(call, 'owner-code', '/?event=abc');
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get('location')).toBe('/?event=abc');
+    const cookie = `__Host-kk-session=${cookieValue(callback, '__Host-kk-session')}`;
+
+    const session = await call('GET', '/api/session', undefined, { cookie });
+    expect(sessionSchema.parse(await session.json())).toEqual({ email: OWNER, owner: true });
+    expect((await call('GET', '/api/admin/events', undefined, { cookie })).status).toBe(200);
+  });
+
+  it('does not return to another site', async () => {
+    const { call } = setup();
+    for (const next of ['https://evil.example/', '//evil.example', '/\\evil.example']) {
+      expect((await signIn(call, 'owner-code', next)).headers.get('location')).toBe('/');
+    }
+  });
+
+  it('refuses a Google account that is not an admin', async () => {
+    const { call, access } = setup();
+    const callback = await signIn(call, 'helper-code');
+    expect(callback.headers.get('location')).toBe('/?signin=denied');
+    expect(cookieValue(callback, '__Host-kk-session')).toBe('');
+    expect(access.sessions.size).toBe(1);
+  });
+
+  it('refuses a callback that does not match the browser that started it', async () => {
+    const { call, access } = setup();
+    const start = await call('GET', '/auth/google/start');
+    const login = `__Host-kk-login=${cookieValue(start, '__Host-kk-login')}`;
+    const state = new URL(start.headers.get('location') ?? '').searchParams.get('state') ?? '';
+    const attempts = [
+      { query: `code=owner-code&state=${state}`, cookie: '' },
+      { query: 'code=owner-code&state=other', cookie: login },
+      { query: `state=${state}&error=access_denied`, cookie: login },
+      { query: `code=unknown-code&state=${state}`, cookie: login },
+    ];
+    for (const { query, cookie } of attempts) {
+      const callback = await call('GET', `/auth/google/callback?${query}`, undefined, { cookie });
+      expect(callback.headers.get('location')).toBe('/?signin=failed');
+    }
+    expect(access.sessions.size).toBe(1);
+  });
+
+  it('reports nobody signed in without a session', async () => {
+    const { call } = setup();
+    const session = await call('GET', '/api/session', undefined, { cookie: '' });
+    expect(sessionSchema.parse(await session.json())).toEqual({ email: null, owner: false });
+  });
+
+  it('ends a session when it expires', async () => {
+    const { call, clock } = setup();
+    const callback = await signIn(call, 'owner-code');
+    const cookie = `__Host-kk-session=${cookieValue(callback, '__Host-kk-session')}`;
+    clock.now = NOW + SESSION_SECONDS * 1000 - 1;
+    expect((await call('GET', '/api/admin/events', undefined, { cookie })).status).toBe(200);
+    clock.now = NOW + SESSION_SECONDS * 1000;
+    expect((await call('GET', '/api/admin/events', undefined, { cookie })).status).toBe(401);
+  });
+
+  it('signs out', async () => {
+    const { call, access } = setup();
+    expect((await call('POST', '/auth/logout')).status).toBe(204);
+    expect(access.sessions.size).toBe(0);
+    expect((await call('GET', '/api/admin/events')).status).toBe(401);
+  });
+
+  it('refuses changes sent from another site', async () => {
+    const { call, access } = setup();
+    for (const origin of ['https://evil.example', '']) {
+      const create = await call('POST', '/api/admin/events', { title: 'Work' }, { origin });
+      expect(create.status).toBe(403);
+      expect((await call('POST', '/auth/logout', undefined, { origin })).status).toBe(403);
+    }
+    expect(access.sessions.size).toBe(1);
+  });
+});
+
+describe('admins API', () => {
+  async function admins(response: Response) {
+    return adminListSchema.parse(await response.json()).admins;
+  }
+
+  it('lets the owner add and remove admins', async () => {
+    const { call } = setup();
+    expect(adminListSchema.parse(await (await call('GET', '/api/admin/admins')).json())).toEqual({
+      owner: OWNER,
+      admins: [],
+    });
+    const added = await call('POST', '/api/admin/admins', { email: ' Helper@Example.com ' });
+    expect(await admins(added)).toEqual([HELPER]);
+    const removed = await call('DELETE', `/api/admin/admins/${encodeURIComponent(HELPER)}`);
+    expect(await admins(removed)).toEqual([]);
+  });
+
+  it('rejects invalid, repeated and unknown emails', async () => {
+    const { call } = setup();
+    expect((await call('POST', '/api/admin/admins', { email: 'not-an-email' })).status).toBe(400);
+    expect((await call('POST', '/api/admin/admins', { email: OWNER })).status).toBe(400);
+    await call('POST', '/api/admin/admins', { email: HELPER });
+    expect((await call('POST', '/api/admin/admins', { email: HELPER })).status).toBe(400);
+    expect((await call('DELETE', '/api/admin/admins/nobody%40example.com')).status).toBe(404);
+    expect((await call('DELETE', `/api/admin/admins/${encodeURIComponent(OWNER)}`)).status).toBe(
+      404,
+    );
+  });
+
+  it('lets an added admin sign in but not manage admins', async () => {
+    const { call } = setup();
+    await call('POST', '/api/admin/admins', { email: HELPER });
+    const callback = await signIn(call, 'helper-code');
+    const cookie = `__Host-kk-session=${cookieValue(callback, '__Host-kk-session')}`;
+
+    const session = await call('GET', '/api/session', undefined, { cookie });
+    expect(sessionSchema.parse(await session.json())).toEqual({ email: HELPER, owner: false });
+    expect((await call('GET', '/api/admin/events', undefined, { cookie })).status).toBe(200);
+    expect((await call('GET', '/api/admin/admins', undefined, { cookie })).status).toBe(403);
+    const add = await call('POST', '/api/admin/admins', { email: 'x@example.com' }, { cookie });
+    expect(add.status).toBe(403);
+  });
+
+  it('signs a removed admin out at once', async () => {
+    const { call, access } = setup();
+    await call('POST', '/api/admin/admins', { email: HELPER });
+    const callback = await signIn(call, 'helper-code');
+    const cookie = `__Host-kk-session=${cookieValue(callback, '__Host-kk-session')}`;
+    await call('DELETE', `/api/admin/admins/${encodeURIComponent(HELPER)}`);
+    expect((await call('GET', '/api/admin/events', undefined, { cookie })).status).toBe(401);
+    expect(access.sessions.size).toBe(1);
+  });
+
+  it('has no admins when the owner is not configured', async () => {
+    const { repository } = memoryRepository({});
+    const app = createApp({
+      repository,
+      characters: memoryCharacters([]).characters,
+      auth: memoryAuth().auth,
+      identity,
+      ownerEmail: '',
+      limiter: new MissLimiter(3, 60_000),
+      now: () => NOW,
+    });
+    const response = await app.request('/api/admin/events', { headers: { cookie: OWNER_COOKIE } });
     expect(response.status).toBe(401);
   });
 });
@@ -301,10 +532,10 @@ describe('characters API', () => {
     expect(response.status).toBe(400);
   });
 
-  it('requires the admin password', async () => {
+  it('requires a signed-in admin', async () => {
     const { call } = setup();
     const response = await call('GET', '/api/admin/characters', undefined, {
-      authorization: 'Bearer no',
+      cookie: '__Host-kk-session=no',
     });
     expect(response.status).toBe(401);
   });

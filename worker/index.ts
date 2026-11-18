@@ -2,12 +2,20 @@ import { DurableObject } from 'cloudflare:workers';
 import { MAIN_EVENT_ID } from '../shared/schema';
 import { createApp } from './app';
 import {
+  authSettingsSchema,
+  storedAdminsSchema,
+  storedSessionSchema,
+  type SessionRecord,
+  type StoredSession,
+} from './auth';
+import {
   characterImageSchema,
   characterLibrarySchema,
   type CharacterImage,
   type StoredCharacter,
 } from './characters';
 import { createEmptyEvent, storedEventSchema, type EventRecord, type StoredEvent } from './event';
+import { createGoogleIdentity } from './google';
 import { MissLimiter } from './rate-limit';
 
 /** The main event keeps the key it had before multiple events existed. */
@@ -15,6 +23,8 @@ const MAIN_EVENT_KEY = 'event';
 const EVENT_KEY_PREFIX = 'event:';
 const CHARACTERS_KEY = 'characters';
 const CHARACTER_IMAGE_KEY_PREFIX = 'character-image:';
+const ADMINS_KEY = 'admins';
+const SESSION_KEY_PREFIX = 'session:';
 const MAX_LINK_MISSES = 20;
 const LINK_MISS_WINDOW_MS = 15 * 60 * 1000;
 
@@ -26,12 +36,21 @@ function imageKey(characterId: string): string {
   return `${CHARACTER_IMAGE_KEY_PREFIX}${characterId}`;
 }
 
+function sessionStorageKey(key: string): string {
+  return `${SESSION_KEY_PREFIX}${key}`;
+}
+
 /**
  * Holds every Kris Kringle event. All API requests run inside this object so that reads and
  * writes of events never interleave.
  */
 export class EventStore extends DurableObject<Env> {
   private readonly limiter = new MissLimiter(MAX_LINK_MISSES, LINK_MISS_WINDOW_MS);
+  private readonly settings = authSettingsSchema.parse(this.env);
+  private readonly identity = createGoogleIdentity({
+    clientId: this.settings.GOOGLE_CLIENT_ID,
+    clientSecret: this.settings.GOOGLE_CLIENT_SECRET,
+  });
 
   private async load(id: string): Promise<StoredEvent | null> {
     const stored = await this.ctx.storage.get(storageKey(id));
@@ -60,6 +79,19 @@ export class EventStore extends DurableObject<Env> {
     return stored === undefined ? null : characterImageSchema.parse(stored);
   }
 
+  private async loadSession(key: string): Promise<StoredSession | null> {
+    const stored = await this.ctx.storage.get(sessionStorageKey(key));
+    return stored === undefined ? null : storedSessionSchema.parse(stored);
+  }
+
+  private async listSessions(): Promise<SessionRecord[]> {
+    const stored = await this.ctx.storage.list({ prefix: SESSION_KEY_PREFIX });
+    return [...stored].map(([key, value]) => ({
+      key: key.slice(SESSION_KEY_PREFIX.length),
+      session: storedSessionSchema.parse(value),
+    }));
+  }
+
   override async fetch(request: Request): Promise<Response> {
     const app = createApp({
       repository: {
@@ -79,7 +111,19 @@ export class EventStore extends DurableObject<Env> {
           await this.ctx.storage.delete(imageKey(id));
         },
       },
-      adminPassword: this.env.ADMIN_PASSWORD,
+      auth: {
+        admins: async () =>
+          storedAdminsSchema.parse((await this.ctx.storage.get(ADMINS_KEY)) ?? []),
+        saveAdmins: (emails) => this.ctx.storage.put(ADMINS_KEY, emails),
+        loadSession: (key) => this.loadSession(key),
+        saveSession: (key, session) => this.ctx.storage.put(sessionStorageKey(key), session),
+        removeSession: async (key) => {
+          await this.ctx.storage.delete(sessionStorageKey(key));
+        },
+        listSessions: () => this.listSessions(),
+      },
+      identity: this.identity,
+      ownerEmail: this.settings.ADMIN_EMAIL,
       limiter: this.limiter,
     });
     return app.fetch(request);

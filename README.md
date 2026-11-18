@@ -37,7 +37,7 @@ button; on an iPhone it starts off and turning it on brings up the system's perm
 
 ## Running a draw
 
-The admin page is at `/` and is password protected.
+The admin page is at `/`. Admins sign in with Google.
 
 1. Create an event and add people, one name per line.
 2. Pick each person's reveal.
@@ -57,6 +57,9 @@ The admin page is at `/` and is password protected.
   smaller loops, and reports an error if no draw fits.
 - A client that requests 20 unknown links within 15 minutes is blocked for the rest of that
   window, so links cannot be guessed by brute force.
+- One Google account, the owner, is set in the Worker's configuration. The owner adds and removes
+  other admins by email in the Admins panel. Removing an admin signs them out at once. Sessions
+  last seven days.
 - An event can have illustrated characters that stand round the object and react as it opens. They
   are imported from a folder in the admin (`characters.json` plus the images it names) into one
   library shared by every event. Artwork is stored with the app's data, not in this repository.
@@ -66,6 +69,7 @@ The admin page is at `/` and is password protected.
 | Path                | Purpose                                                                   |
 | ------------------- | ------------------------------------------------------------------------- |
 | `/`                 | Admin                                                                     |
+| `/auth/google/*`    | Google sign-in                                                            |
 | `/r/<link>`         | A person's private reveal                                                 |
 | `/r/<link>?preview` | The same page without recording a view or reveal                          |
 | `/preview/<kind>`   | A reveal with sample data: `egg`, `jack`, `present`, `cracker` or `globe` |
@@ -75,22 +79,32 @@ The admin page is at `/` and is password protected.
 Runs on Cloudflare Workers: a Hono API, one Durable Object for storage, and static assets for the
 front end.
 
-| Command             | Purpose                                                                      |
-| ------------------- | ---------------------------------------------------------------------------- |
-| `npm run dev`       | Local dev server (Vite + workerd)                                            |
-| `npm test`          | Unit tests: draw, API, phone motion, cast state and placement, sprite import |
-| `npm run typecheck` | TypeScript, front end and Worker                                             |
-| `npm run format`    | Prettier                                                                     |
-| `npm run deploy`    | Build and deploy to Cloudflare                                               |
+| Command             | Purpose                                                                               |
+| ------------------- | ------------------------------------------------------------------------------------- |
+| `npm run dev`       | Local dev server (Vite + workerd)                                                     |
+| `npm test`          | Unit tests: draw, API, sign-in, phone motion, cast state and placement, sprite import |
+| `npm run typecheck` | TypeScript, front end and Worker                                                      |
+| `npm run format`    | Prettier                                                                              |
+| `npm run deploy`    | Build and deploy to Cloudflare                                                        |
 
-The Worker reads the admin password from the `ADMIN_PASSWORD` secret.
+The Worker reads three secrets:
 
-- Local: `.dev.vars` (`ADMIN_PASSWORD=...`, not committed).
-- Production: `npx wrangler secret put ADMIN_PASSWORD`.
+| Secret                 | Purpose                                  |
+| ---------------------- | ---------------------------------------- |
+| `GOOGLE_CLIENT_ID`     | Google OAuth web client                  |
+| `GOOGLE_CLIENT_SECRET` | Its secret                               |
+| `ADMIN_EMAIL`          | The owner's Google account email address |
+
+- Local: `.dev.vars` (`NAME=value` lines, not committed).
+- Production: `npx wrangler secret put <NAME>` for each.
+
+The Google client needs `<site origin>/auth/google/callback` as an authorised redirect URI, for
+every origin the admin page is opened on (for local development, `http://localhost:5173`).
 
 ### Layout
 
-- `worker/` — API, draw logic, Durable Object, link word lists, rate limit and character library.
+- `worker/` — API, draw logic, Durable Object, link word lists, rate limit, character library and
+  Google sign-in.
 - `shared/schema.ts` — Zod schemas shared by the API and the front end.
 - `src/admin/` — admin page.
 - `src/reveal/` — reveal page. `kinds/` has one file per reveal.
@@ -100,7 +114,8 @@ The Worker reads the admin password from the `ADMIN_PASSWORD` secret.
 
 One Durable Object holds every event. The original event is stored under `event` (shown as event
 id `main`) and cannot be deleted; other events are stored as `event:<id>`. The character library is
-one list under `characters`, with each sprite sheet under `character-image:<id>`.
+one list under `characters`, with each sprite sheet under `character-image:<id>`. Added admins are
+one list under `admins`, and each sign-in session is stored under `session:<hash of its cookie>`.
 
 ## Made with AI
 

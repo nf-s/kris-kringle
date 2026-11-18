@@ -3,11 +3,13 @@ import {
   REVEAL_KINDS,
   REVEAL_LABELS,
   revealKindSchema,
+  type AdminList,
   type AdminPerson,
   type AdminState,
   type EventSummary,
+  type Session,
 } from '../../shared/schema';
-import { ApiError, adminApi } from '../api';
+import { ApiError, adminApi, fetchSession, signInPath, signOut } from '../api';
 import { button, h } from '../dom';
 import { renderActivity } from './activity';
 import { createCharacterPanels } from './characters';
@@ -20,29 +22,27 @@ import {
   type ExclusionMap,
 } from './exclusions';
 
-const PASSWORD_KEY = 'kk-admin-password';
 const EVENT_PARAM = 'event';
+/** Set by the Worker when a sign-in does not end in a session. */
+const SIGN_IN_PARAM = 'signin';
+const SIGN_IN_ERRORS = new Map([
+  ['denied', 'That Google account is not an admin.'],
+  ['failed', 'Sign-in failed. Try again.'],
+]);
 const CLEARS_DRAW_WARNING =
   'This clears the current draw and everyone will need a new draw. Continue?';
 const EXCLUSIONS_CLEAR_DRAW_WARNING =
   'These exclusions rule out the current draw, so saving clears it. Continue?';
 const DISCARD_EXCLUSIONS_WARNING = 'Discard unsaved exclusion changes?';
 
-function loadPassword(): string {
-  try {
-    return window.sessionStorage.getItem(PASSWORD_KEY) ?? '';
-  } catch {
-    return '';
-  }
-}
-
-function storePassword(password: string): void {
-  try {
-    if (password) window.sessionStorage.setItem(PASSWORD_KEY, password);
-    else window.sessionStorage.removeItem(PASSWORD_KEY);
-  } catch {
-    // Storage is unavailable; the password just won't survive a reload.
-  }
+/** Reads the result of a failed sign-in from the URL and removes it. */
+function takeSignInError(): string {
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get(SIGN_IN_PARAM);
+  if (code === null) return '';
+  url.searchParams.delete(SIGN_IN_PARAM);
+  window.history.replaceState(null, '', url);
+  return SIGN_IN_ERRORS.get(code) ?? '';
 }
 
 function eventFromUrl(): string | null {
@@ -84,7 +84,11 @@ function flash(element: HTMLButtonElement, label: string): void {
 }
 
 export function mountAdmin(root: HTMLElement): void {
-  let password = loadPassword();
+  const signInError = takeSignInError();
+  /** Null until the Worker has said who is signed in. */
+  let session: Session | null = null;
+  /** Loaded only for the owner, who manages the other admins. */
+  let adminList: AdminList | null = null;
   let events: EventSummary[] = [];
   let state: AdminState | null = null;
   let showAssignments = false;
@@ -96,7 +100,6 @@ export function mountAdmin(root: HTMLElement): void {
   let busy = false;
 
   const characters = createCharacterPanels({
-    password: () => password,
     run,
     applyState,
     render,
@@ -105,11 +108,11 @@ export function mountAdmin(root: HTMLElement): void {
   document.title = 'Kris Kringle admin';
   document.body.className = 'admin-body';
 
-  function signOut(reason: string): void {
-    password = '';
+  function clearSession(reason: string): void {
+    session = { email: null, owner: false };
+    adminList = null;
     state = null;
     events = [];
-    storePassword('');
     characters.reset();
     message = reason;
   }
@@ -121,7 +124,7 @@ export function mountAdmin(root: HTMLElement): void {
       await action();
       message = '';
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401) signOut('Wrong password');
+      if (error instanceof ApiError && error.status === 401) clearSession('Sign in again.');
       else message = error instanceof Error ? error.message : 'Request failed';
     }
     busy = false;
@@ -153,21 +156,33 @@ export function mountAdmin(root: HTMLElement): void {
   }
 
   /** Runs a change to the current event. */
-  function update(call: (password: string, eventId: string) => Promise<AdminState>): void {
+  function update(call: (eventId: string) => Promise<AdminState>): void {
     const current = state;
     if (!current) return;
-    void run(async () => applyState(await call(password, current.id)));
+    void run(async () => applyState(await call(current.id)));
   }
 
   async function loadEvent(preferredId: string | null): Promise<void> {
-    events = (await adminApi.events(password)).events;
+    events = (await adminApi.events()).events;
     const target =
       events.find((event) => event.id === preferredId) ??
       events.find((event) => event.id === MAIN_EVENT_ID) ??
       events[0];
     if (!target) throw new Error('No events found');
-    applyState(await adminApi.event(password, target.id));
+    applyState(await adminApi.event(target.id));
     await characters.load();
+  }
+
+  async function loadSession(): Promise<void> {
+    try {
+      session = await fetchSession();
+    } catch (error) {
+      session = { email: null, owner: false };
+      throw error;
+    }
+    if (session.email === null) return;
+    await loadEvent(eventFromUrl());
+    if (session.owner) adminList = await adminApi.admins();
   }
 
   function confirmClearsDraw(current: AdminState): boolean {
@@ -182,28 +197,22 @@ export function mountAdmin(root: HTMLElement): void {
   }
 
   function renderLogin(): HTMLElement {
-    const input = h('input', {
-      type: 'password',
-      name: 'password',
-      autocomplete: 'current-password',
-      'aria-label': 'Admin password',
-      placeholder: 'Admin password',
-    });
-    const form = h(
-      'form',
+    const panel = h(
+      'div',
       { class: 'panel login' },
       h('h1', {}, 'Kris Kringle admin'),
-      input,
-      h('button', { type: 'submit', class: 'btn btn--primary' }, 'Sign in'),
+      h(
+        'a',
+        {
+          class: 'btn btn--primary',
+          href: signInPath(`${window.location.pathname}${window.location.search}`),
+        },
+        'Sign in with Google',
+      ),
     );
-    if (message) form.append(h('p', { class: 'error', role: 'alert' }, message));
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
-      password = input.value;
-      storePassword(password);
-      void run(() => loadEvent(eventFromUrl()));
-    });
-    return form;
+    const notice = message || signInError;
+    if (notice) panel.append(h('p', { class: 'error', role: 'alert' }, notice));
+    return panel;
   }
 
   function renderEvents(current: AdminState): HTMLElement {
@@ -215,7 +224,7 @@ export function mountAdmin(root: HTMLElement): void {
         active ? 'event-tab is-active' : 'event-tab',
         () => {
           if (active || !confirmDiscardDraft()) return;
-          void run(async () => applyState(await adminApi.event(password, event.id)));
+          void run(async () => applyState(await adminApi.event(event.id)));
         },
       );
       if (active) tab.setAttribute('aria-current', 'page');
@@ -239,7 +248,7 @@ export function mountAdmin(root: HTMLElement): void {
       event.preventDefault();
       const title = name.value.trim();
       if (!title || !confirmDiscardDraft()) return;
-      void run(async () => applyState(await adminApi.createEvent(password, { title })));
+      void run(async () => applyState(await adminApi.createEvent({ title })));
     });
 
     return h('section', { class: 'panel' }, h('h2', {}, 'Events'), tabs, create);
@@ -261,7 +270,7 @@ export function mountAdmin(root: HTMLElement): void {
           const prompt = `Delete "${eventLabel(current)}" and all its links? This cannot be undone.`;
           if (!window.confirm(prompt)) return;
           void run(async () => {
-            events = (await adminApi.deleteEvent(password, current.id)).events;
+            events = (await adminApi.deleteEvent(current.id)).events;
             await loadEvent(null);
           });
         }),
@@ -281,7 +290,7 @@ export function mountAdmin(root: HTMLElement): void {
     );
     form.addEventListener('submit', (event) => {
       event.preventDefault();
-      update((pw, id) => adminApi.saveSettings(pw, id, { title: title.value, note: note.value }));
+      update((id) => adminApi.saveSettings(id, { title: title.value, note: note.value }));
     });
     return form;
   }
@@ -312,7 +321,7 @@ export function mountAdmin(root: HTMLElement): void {
     }
     select.addEventListener('change', () => {
       const kind = revealKindSchema.safeParse(select.value);
-      if (kind.success) update((pw, id) => adminApi.setReveal(pw, id, person.id, kind.data));
+      if (kind.success) update((id) => adminApi.setReveal(id, person.id, kind.data));
     });
 
     const receiver = current.people.find((other) => other.id === person.receiverId);
@@ -325,7 +334,7 @@ export function mountAdmin(root: HTMLElement): void {
     copy.disabled = !current.drawn;
     const remove = button('Remove', 'btn btn--small btn--quiet', () => {
       if (confirmClearsDraw(current)) {
-        update((pw, id) => adminApi.removePerson(pw, id, person.id));
+        update((id) => adminApi.removePerson(id, person.id));
       }
     });
 
@@ -379,7 +388,7 @@ export function mountAdmin(root: HTMLElement): void {
         .map((name) => name.trim())
         .filter((name) => name.length > 0);
       if (list.length === 0 || !confirmClearsDraw(current)) return;
-      update((pw, id) => adminApi.addPeople(pw, id, { names: list }));
+      update((id) => adminApi.addPeople(id, { names: list }));
     });
 
     const panel = h(
@@ -453,8 +462,8 @@ export function mountAdmin(root: HTMLElement): void {
       if (current.drawn && conflictsWithDraw(current.people, draft)) {
         if (!window.confirm(EXCLUSIONS_CLEAR_DRAW_WARNING)) return;
       }
-      update(async (pw, id) => {
-        const next = await adminApi.saveExclusions(pw, id, toRequest(draft));
+      update(async (id) => {
+        const next = await adminApi.saveExclusions(id, toRequest(draft));
         exclusionDraft = null;
         return next;
       });
@@ -555,6 +564,69 @@ export function mountAdmin(root: HTMLElement): void {
     );
   }
 
+  function renderAdmins(list: AdminList): HTMLElement {
+    const body = h(
+      'tbody',
+      {},
+      h('tr', {}, h('td', {}, list.owner), h('td', { class: 'muted' }, 'Owner'), h('td', {})),
+    );
+    for (const email of list.admins) {
+      const remove = button('Remove', 'btn btn--small btn--quiet', () => {
+        if (!window.confirm(`Remove ${email} as an admin?`)) return;
+        void run(async () => {
+          adminList = await adminApi.removeAdmin(email);
+        });
+      });
+      body.append(
+        h(
+          'tr',
+          {},
+          h('td', {}, email),
+          h('td', { class: 'muted' }, 'Admin'),
+          h('td', { class: 'cell-actions' }, remove),
+        ),
+      );
+    }
+
+    const email = h('input', {
+      type: 'email',
+      maxlength: '254',
+      autocomplete: 'off',
+      'aria-label': 'Google account email',
+      placeholder: 'Google account email',
+      required: '',
+    });
+    const add = h(
+      'form',
+      { class: 'inline-form' },
+      email,
+      h('button', { type: 'submit', class: 'btn' }, 'Add admin'),
+    );
+    add.addEventListener('submit', (event) => {
+      event.preventDefault();
+      void run(async () => {
+        adminList = await adminApi.addAdmin({ email: email.value });
+      });
+    });
+
+    return h(
+      'section',
+      { class: 'panel' },
+      h('h2', {}, `Admins (${list.admins.length + 1})`),
+      h(
+        'div',
+        { class: 'table-scroll' },
+        h(
+          'table',
+          {},
+          h('thead', {}, h('tr', {}, h('th', {}, 'Email'), h('th', {}, 'Role'), h('th', {}, ''))),
+          body,
+        ),
+      ),
+      add,
+    );
+  }
+
   function renderDashboard(current: AdminState): HTMLElement {
     const page = h(
       'main',
@@ -564,8 +636,10 @@ export function mountAdmin(root: HTMLElement): void {
         { class: 'admin__header' },
         h('h1', {}, 'Kris Kringle admin'),
         button('Sign out', 'btn btn--quiet', () => {
-          signOut('');
-          render();
+          void run(async () => {
+            await signOut();
+            clearSession('');
+          });
         }),
       ),
     );
@@ -575,6 +649,7 @@ export function mountAdmin(root: HTMLElement): void {
     page.append(characters.renderEventCharacters(current), renderDraw(current));
     if (current.drawn) page.append(renderActivityPanel(current));
     page.append(characters.renderLibrary());
+    if (adminList) page.append(renderAdmins(adminList));
     return page;
   }
 
@@ -585,7 +660,9 @@ export function mountAdmin(root: HTMLElement): void {
     const focusKey = active instanceof HTMLElement ? active.dataset.focusKey : undefined;
     const pageScroll = window.scrollY;
 
-    root.replaceChildren(state ? renderDashboard(state) : renderLogin());
+    if (state) root.replaceChildren(renderDashboard(state));
+    else if (session) root.replaceChildren(renderLogin());
+    else root.replaceChildren();
 
     const nextScroller = root.querySelector('.grid-scroll');
     if (nextScroller) nextScroller.scrollLeft = scrollLeft;
@@ -597,5 +674,5 @@ export function mountAdmin(root: HTMLElement): void {
   }
 
   render();
-  if (password) void run(() => loadEvent(eventFromUrl()));
+  void run(loadSession);
 }

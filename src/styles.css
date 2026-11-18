@@ -136,6 +136,11 @@ a:focus-visible {
   white-space: nowrap;
 }
 
+a.btn {
+  text-align: center;
+  text-decoration: none;
+}
+
 .btn:hover:not(:disabled) {
   background: #f4f6f9;
 }

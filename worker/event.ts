@@ -61,12 +61,15 @@ function randomInt(max: number): number {
   return value % max;
 }
 
-export function randomToken(byteLength: number): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
+export function toBase64Url(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes))
     .replaceAll('+', '-')
     .replaceAll('/', '_')
     .replaceAll('=', '');
+}
+
+export function randomToken(byteLength: number): string {
+  return toBase64Url(crypto.getRandomValues(new Uint8Array(byteLength)));
 }
 
 function pick<T>(items: readonly T[]): T {

@@ -9,7 +9,6 @@ const THUMB_WIDTH = 96;
 const THUMB_HEIGHT = 120;
 
 interface CharacterPanelOptions {
-  password: () => string;
   /** Runs an action with the admin page's busy state and error handling, then re-renders. */
   run: (action: () => Promise<void>) => Promise<void>;
   applyState: (next: AdminState) => void;
@@ -39,9 +38,7 @@ export function createCharacterPanels(options: CharacterPanelOptions): Character
   function image(id: string): Promise<ImageBitmap> {
     const cached = images.get(id);
     if (cached) return cached;
-    const loading = adminApi
-      .characterImage(options.password(), id)
-      .then((blob) => createImageBitmap(blob));
+    const loading = adminApi.characterImage(id).then((blob) => createImageBitmap(blob));
     images.set(id, loading);
     void loading.catch(() => images.delete(id));
     return loading;
@@ -82,14 +79,13 @@ export function createCharacterPanels(options: CharacterPanelOptions): Character
         importStatus = `Importing ${done + 1} of ${total}`;
         options.render();
         const existing = characters.find((other) => other.name === character.name);
-        const password = options.password();
         if (existing) {
           characters = (
-            await adminApi.updateCharacter(password, existing.id, existing.name, character.sprite)
+            await adminApi.updateCharacter(existing.id, existing.name, character.sprite)
           ).characters;
           forgetImage(existing.id);
         } else {
-          characters = (await adminApi.createCharacter(password, character.name, character.sprite))
+          characters = (await adminApi.createCharacter(character.name, character.sprite))
             .characters;
         }
         done++;
@@ -155,14 +151,13 @@ export function createCharacterPanels(options: CharacterPanelOptions): Character
       const next = name.value.trim();
       if (!next || next === character.name) return;
       void options.run(async () => {
-        characters = (await adminApi.updateCharacter(options.password(), character.id, next))
-          .characters;
+        characters = (await adminApi.updateCharacter(character.id, next)).characters;
       });
     });
     const remove = button('Delete', 'btn btn--small btn--quiet', () => {
       if (!window.confirm(deleteWarning(character))) return;
       void options.run(async () => {
-        characters = (await adminApi.deleteCharacter(options.password(), character.id)).characters;
+        characters = (await adminApi.deleteCharacter(character.id)).characters;
         forgetImage(character.id);
       });
     });
@@ -238,7 +233,7 @@ export function createCharacterPanels(options: CharacterPanelOptions): Character
         .map((character) => character.id)
         .filter((id) => selected.has(id));
       void options.run(async () => {
-        const next = await adminApi.saveEventCharacters(options.password(), current.id, {
+        const next = await adminApi.saveEventCharacters(current.id, {
           characterIds,
         });
         draft = null;
@@ -267,7 +262,7 @@ export function createCharacterPanels(options: CharacterPanelOptions): Character
 
   return {
     async load() {
-      characters = (await adminApi.characters(options.password())).characters;
+      characters = (await adminApi.characters()).characters;
     },
     reset() {
       characters = [];

@@ -1,13 +1,33 @@
 import { Hono, type Context } from 'hono';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
+import type { CookieOptions } from 'hono/utils/cookie';
 import {
   MAIN_EVENT_ID,
+  addAdminRequestSchema,
   addPeopleRequestSchema,
   createEventRequestSchema,
+  emailSchema,
   eventCharactersRequestSchema,
   exclusionsRequestSchema,
   settingsRequestSchema,
   updatePersonRequestSchema,
 } from '../shared/schema';
+import {
+  LOGIN_COOKIE,
+  LOGIN_SECONDS,
+  SESSION_COOKIE,
+  SESSION_SECONDS,
+  addAdmin,
+  isAdmin,
+  parseLoginState,
+  pkceChallenge,
+  removeAdmin,
+  safeReturnPath,
+  sessionKey,
+  type AuthRepository,
+  type LoginState,
+  type StoredSession,
+} from './auth';
 import {
   addCharacter,
   characterIds,
@@ -41,6 +61,7 @@ import {
   type StoredEvent,
   type VisitKind,
 } from './event';
+import type { IdentityProvider } from './google';
 import type { MissLimiter } from './rate-limit';
 
 export interface EventRepository {
@@ -64,22 +85,31 @@ export interface CharacterRepository {
 interface AppOptions {
   repository: EventRepository;
   characters: CharacterRepository;
-  adminPassword: string;
+  auth: AuthRepository;
+  identity: IdentityProvider;
+  /** The admin who cannot be removed and who manages the other admins. */
+  ownerEmail: string;
   limiter: MissLimiter;
   now?: () => number;
 }
 
-async function sha256(text: string): Promise<Uint8Array> {
-  return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
+const CALLBACK_PATH = '/auth/google/callback';
+const SAFE_METHODS = new Set(['GET', 'HEAD']);
+const COOKIE_OPTIONS: CookieOptions = {
+  path: '/',
+  secure: true,
+  httpOnly: true,
+  sameSite: 'Lax',
+  prefix: 'host',
+};
+
+/** Browsers send `Origin` with every request that changes data, so a missing one is refused. */
+function sameOrigin(c: Context): boolean {
+  return c.req.header('origin') === new URL(c.req.url).origin;
 }
 
-/** Compares digests rather than the raw strings so timing does not leak the password. */
-async function passwordMatches(supplied: string, expected: string): Promise<boolean> {
-  if (expected.length === 0) return false;
-  const [a, b] = await Promise.all([sha256(supplied), sha256(expected)]);
-  let difference = 0;
-  for (let i = 0; i < a.length; i++) difference |= a[i] ^ b[i];
-  return difference === 0;
+function redirectUri(c: Context): string {
+  return `${new URL(c.req.url).origin}${CALLBACK_PATH}`;
 }
 
 async function readJson(c: Context): Promise<unknown> {
@@ -109,11 +139,14 @@ function clientKey(c: Context): string {
 export function createApp({
   repository,
   characters,
-  adminPassword,
+  auth,
+  identity,
+  ownerEmail,
   limiter,
   now = Date.now,
 }: AppOptions): Hono {
   const app = new Hono();
+  const owner = ownerEmail.trim().toLowerCase();
 
   /** Loads an event, applies a change and saves it. `change` returns an error message on failure. */
   async function changeEvent(
@@ -137,13 +170,119 @@ export function createApp({
     return c.json(toCharacterList(await characters.list()));
   }
 
+  /** The signed-in admin's email. Checked against the admin list on every request. */
+  async function signedInAdmin(c: Context): Promise<string | null> {
+    const token = getCookie(c, SESSION_COOKIE, 'host');
+    if (!token) return null;
+    const session = await auth.loadSession(await sessionKey(token));
+    if (!session || session.expiresAt <= now()) return null;
+    return isAdmin(await auth.admins(), owner, session.email) ? session.email : null;
+  }
+
+  async function removeSessions(stale: (session: StoredSession) => boolean): Promise<void> {
+    for (const record of await auth.listSessions()) {
+      if (stale(record.session)) await auth.removeSession(record.key);
+    }
+  }
+
+  async function adminList(c: Context) {
+    return c.json({ owner, admins: await auth.admins() });
+  }
+
+  app.get('/auth/google/start', async (c) => {
+    const login: LoginState = {
+      state: randomToken(32),
+      nonce: randomToken(32),
+      verifier: randomToken(32),
+      next: safeReturnPath(c.req.query('next')),
+    };
+    setCookie(c, LOGIN_COOKIE, JSON.stringify(login), { ...COOKIE_OPTIONS, maxAge: LOGIN_SECONDS });
+    return c.redirect(
+      identity.authorizationUrl({
+        state: login.state,
+        nonce: login.nonce,
+        challenge: await pkceChallenge(login.verifier),
+        redirectUri: redirectUri(c),
+      }),
+    );
+  });
+
+  app.get(CALLBACK_PATH, async (c) => {
+    const login = parseLoginState(getCookie(c, LOGIN_COOKIE, 'host'));
+    deleteCookie(c, LOGIN_COOKIE, COOKIE_OPTIONS);
+    const code = c.req.query('code');
+    if (!login || !code || c.req.query('state') !== login.state) {
+      return c.redirect('/?signin=failed');
+    }
+    const email = await identity.verifiedEmail({
+      code,
+      verifier: login.verifier,
+      nonce: login.nonce,
+      redirectUri: redirectUri(c),
+    });
+    if (!email) return c.redirect('/?signin=failed');
+    const admins = await auth.admins();
+    if (!isAdmin(admins, owner, email)) return c.redirect('/?signin=denied');
+    await removeSessions(
+      (session) => session.expiresAt <= now() || !isAdmin(admins, owner, session.email),
+    );
+    const token = randomToken(32);
+    await auth.saveSession(await sessionKey(token), {
+      email,
+      expiresAt: now() + SESSION_SECONDS * 1000,
+    });
+    setCookie(c, SESSION_COOKIE, token, { ...COOKIE_OPTIONS, maxAge: SESSION_SECONDS });
+    return c.redirect(safeReturnPath(login.next));
+  });
+
+  app.post('/auth/logout', async (c) => {
+    if (!sameOrigin(c)) return c.json({ error: 'Cross-site request refused' }, 403);
+    const token = getCookie(c, SESSION_COOKIE, 'host');
+    if (token) await auth.removeSession(await sessionKey(token));
+    deleteCookie(c, SESSION_COOKIE, COOKIE_OPTIONS);
+    return c.body(null, 204);
+  });
+
+  app.all('/auth/*', (c) => c.json({ error: 'Not found' }, 404));
+
+  app.get('/api/session', async (c) => {
+    const email = await signedInAdmin(c);
+    return c.json({ email, owner: email !== null && email === owner });
+  });
+
   app.use('/api/admin/*', async (c, next) => {
-    const header = c.req.header('authorization') ?? '';
-    const supplied = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : '';
-    if (!(await passwordMatches(supplied, adminPassword))) {
-      return c.json({ error: 'Wrong password' }, 401);
+    if (!SAFE_METHODS.has(c.req.method) && !sameOrigin(c)) {
+      return c.json({ error: 'Cross-site request refused' }, 403);
+    }
+    if (!(await signedInAdmin(c))) return c.json({ error: 'Sign in required' }, 401);
+    await next();
+  });
+
+  app.use('/api/admin/admins/*', async (c, next) => {
+    if ((await signedInAdmin(c)) !== owner) {
+      return c.json({ error: 'Only the owner can manage admins' }, 403);
     }
     await next();
+  });
+
+  app.get('/api/admin/admins', (c) => adminList(c));
+
+  app.post('/api/admin/admins', async (c) => {
+    const body = addAdminRequestSchema.safeParse(await readJson(c));
+    if (!body.success) return c.json({ error: 'Enter a valid email address' }, 400);
+    const admins = addAdmin(await auth.admins(), owner, body.data.email);
+    if (typeof admins === 'string') return c.json({ error: admins }, 400);
+    await auth.saveAdmins(admins);
+    return adminList(c);
+  });
+
+  app.delete('/api/admin/admins/:email', async (c) => {
+    const email = emailSchema.safeParse(c.req.param('email'));
+    const admins = email.success ? removeAdmin(await auth.admins(), email.data) : null;
+    if (!email.success || !admins) return c.json({ error: 'Admin not found' }, 404);
+    await auth.saveAdmins(admins);
+    await removeSessions((session) => session.email === email.data);
+    return adminList(c);
   });
 
   app.get('/api/admin/events', (c) => eventList(c));
