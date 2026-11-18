@@ -1,86 +1,70 @@
+<div align="center">
+
 # Kris Kringle
 
-Secret-gift draw with an interactive reveal for each person. Runs on Cloudflare Workers
-(Hono API, one Durable Object for storage, static assets for the front end).
+Secret-gift draw. Each person gets a private link and has to open an object to see who they are
+buying for.
 
-## How it works
+# [kris-kringle.nf-s.workers.dev](https://kris-kringle.nf-s.workers.dev)
 
-- `/admin` — password protected. Create events, add people, pick each person's reveal, set
-  exclusions, draw names, copy links, and see who has opened their link over time. Assignments are
-  behind a toggle.
-- `/r/<link>` — a person's private link. They have to open an object before the name is shown. New
-  links look like `lilac-magpie-nick`: two random words then the person's first name. Links made
-  before this format keep working unchanged.
-- `/r/<link>?preview` — the same page without recording a view or reveal. The admin's Preview links
-  use this once names are drawn.
-- `/preview/<kind>` — try a reveal with sample data. Kinds: `egg`, `jack`, `present`, `cracker`,
-  `globe`.
+<img src="docs/screenshots/reveal.gif" width="280" alt="An egg is tapped until it cracks open and shows a name">
 
-Adding or removing people clears the draw. Redrawing keeps the same links. Saving exclusions only
-clears the draw if it gives someone a person they are now excluded from.
+</div>
 
-Characters live in one library shared by every event. The admin imports them from a folder
-(`characters.json` plus the images it names); importing a name that already exists replaces that
-character's image. Each event has its own ordered list of attached characters, saved separately
-from the draw. Deleting a character removes it from every event.
+## Reveals
 
-On a reveal page the event's characters kneel in a ring round the object, praying. They switch
-to wailing one at a time as task progress increases: the first at 8%, the last at 90%. They all
-jig once the name is out.
+Each person is given one of five objects. All of them work by touch, and on a phone by moving the
+phone itself.
 
-After 0.75 seconds without task
-activity, characters become sad in a fresh random order, with uneven 0.15–0.45 second gaps and
-0.25 second fades. Tapping a visible figure toggles just that figure between sad and the happy
-pose for current progress, until actual task activity resets the group. The object takes touch
-priority. Automatic sadness starts only after task activity, pauses while the tab is hidden,
-and stops once the reveal is complete. Visible characters remain tappable after completion.
-Reduced motion keeps state changes without animated transitions.
+|                  |                             Egg                             |                       Jack-in-the-box                        |                             Present                             |                             Cracker                             |                          Snow globe                           |
+| ---------------- | :---------------------------------------------------------: | :----------------------------------------------------------: | :-------------------------------------------------------------: | :-------------------------------------------------------------: | :-----------------------------------------------------------: |
+|                  |           ![Egg](docs/screenshots/reveal-egg.png)           |     ![Jack-in-the-box](docs/screenshots/reveal-jack.png)     |         ![Present](docs/screenshots/reveal-present.png)         |         ![Cracker](docs/screenshots/reveal-cracker.png)         |       ![Snow globe](docs/screenshots/reveal-globe.png)        |
+| On screen        |                             Tap                             |                       Turn the handle                        |                         Pull the ribbon                         |                          Pull one end                           |                             Shake                             |
+| Moving the phone |                            Jolt                             |                            Twist                             |                              Flick                              |                              Flick                              |                             Shake                             |
+|                  | [Try it](https://kris-kringle.nf-s.workers.dev/preview/egg) | [Try it](https://kris-kringle.nf-s.workers.dev/preview/jack) | [Try it](https://kris-kringle.nf-s.workers.dev/preview/present) | [Try it](https://kris-kringle.nf-s.workers.dev/preview/cracker) | [Try it](https://kris-kringle.nf-s.workers.dev/preview/globe) |
 
-After completion, the cast keeps its faces clear of the compact recipient card and stands above
-the replay controls. The card and buttons receive taps above the canvas; characters remain
-interactive outside those controls. The layout updates when the card appears or the screen resizes.
+The "Try it" links use sample data. Phones that report movement show a "Motion on / Motion off"
+button; on an iPhone it starts off and turning it on brings up the system's permission prompt.
 
-They stand behind the object, so each reveal reports the space its object takes up
-(`footprint`) and nobody is placed where it would cover their face; on a narrow screen the ring
-turns squarer and the figures smaller until everyone fits. A reveal link only ever serves the
-characters attached to its own event, and never their names. Previews at `/preview/<kind>` show
-no characters.
+## Running a draw
 
-On a phone each reveal can also be done by moving the phone: shake it for the snow globe, twist
-it back and forth for the jack-in-the-box, give a short tap-like jolt for the egg, and flick it
-for the present and the cracker. Each egg impact counts as five screen taps, so four impacts
-crack it; screen tapping still takes twenty hits. The impact can be vertical or towards/away
-from the screen and does not require touching a surface. The handle turns no faster than a
-finger could turn it, and it takes several flicks to pull the ribbon out a notch or tear the
-cracker, fewer the sharper they are. The hint under the object names both
-ways once the phone is reporting its movement, and everything still works by touch alone. A
-"Motion on / Motion off" button appears under the sound button on phones that report movement;
-on an iPhone it starts off, and turning it on brings up the system's permission prompt.
+The admin page is at `/` and is password protected.
 
-The draw prefers one loop through the whole group. If exclusions rule that out it falls back to
-smaller loops, and reports an error if no draw fits.
+1. Create an event and add people, one name per line.
+2. Pick each person's reveal.
+3. Mark who must not draw whom.
+4. Draw names. Assignments stay hidden unless you ask to see them.
+5. Copy each person's link and send it to them. Links look like `lilac-magpie-dasher`: two random
+   words, then the person's first name.
+6. Watch who has viewed and opened their link.
 
-A client that requests 20 unknown links within 15 minutes is blocked for the rest of that window,
-so links cannot be guessed by brute force.
+![Admin page with events, event details and the people list](docs/screenshots/admin.png)
 
-## Storage
+![Exclusion grid](docs/screenshots/admin-exclusions.png)
 
-One Durable Object holds every event. The original event stays under its original storage key
-(`event`, shown as event id `main`) and cannot be deleted. Other events are stored as
-`event:<id>`. Each event's attached character ids are stored on the event (`characterIds`).
+- Adding or removing people clears the draw. Redrawing keeps the same links. Saving exclusions
+  only clears the draw if it gives someone a person they are now excluded from.
+- The draw prefers one loop through the whole group. If exclusions rule that out it falls back to
+  smaller loops, and reports an error if no draw fits.
+- A client that requests 20 unknown links within 15 minutes is blocked for the rest of that
+  window, so links cannot be guessed by brute force.
+- An event can have illustrated characters that stand round the object and react as it opens. They
+  are imported from a folder in the admin (`characters.json` plus the images it names) into one
+  library shared by every event. Artwork is stored with the app's data, not in this repository.
 
-The character library is one list under `characters` (id, name, creation time, oldest first).
-Each character's sprite sheet is stored under its own key, `character-image:<id>`, as its content
-type and bytes.
+## Routes
 
-## Admin password
+| Path                | Purpose                                                                   |
+| ------------------- | ------------------------------------------------------------------------- |
+| `/`                 | Admin                                                                     |
+| `/r/<link>`         | A person's private reveal                                                 |
+| `/r/<link>?preview` | The same page without recording a view or reveal                          |
+| `/preview/<kind>`   | A reveal with sample data: `egg`, `jack`, `present`, `cracker` or `globe` |
 
-The Worker reads the password from the `ADMIN_PASSWORD` secret.
+## Development
 
-- Local: `.dev.vars` (`ADMIN_PASSWORD=...`, not committed).
-- Production: `npx wrangler secret put ADMIN_PASSWORD`.
-
-## Commands
+Runs on Cloudflare Workers: a Hono API, one Durable Object for storage, and static assets for the
+front end.
 
 | Command             | Purpose                                                                      |
 | ------------------- | ---------------------------------------------------------------------------- |
@@ -90,20 +74,21 @@ The Worker reads the password from the `ADMIN_PASSWORD` secret.
 | `npm run format`    | Prettier                                                                     |
 | `npm run deploy`    | Build and deploy to Cloudflare                                               |
 
-## Layout
+The Worker reads the admin password from the `ADMIN_PASSWORD` secret.
 
-- `worker/` — API. `event.ts` holds the draw logic, `app.ts` the routes, `index.ts` the Durable
-  Object, `words.ts` the link word lists, `rate-limit.ts` the link-guessing limit,
-  `characters.ts` the character library and upload validation.
+- Local: `.dev.vars` (`ADMIN_PASSWORD=...`, not committed).
+- Production: `npx wrangler secret put ADMIN_PASSWORD`.
+
+### Layout
+
+- `worker/` — API, draw logic, Durable Object, link word lists, rate limit and character library.
 - `shared/schema.ts` — Zod schemas shared by the API and the front end.
-- `src/admin/` — admin page. `exclusions.ts` is the exclusion grid, `activity.ts` the chart,
-  `characters.ts` the character library and each event's character picker.
-- `src/reveal/` — reveal page. `stage.ts` runs the canvas loop, `kinds/` has one file per reveal,
-  `cast.ts` places and animates the characters, `cast-state.ts` controls pose and idle state,
-  `motion.ts` reads the phone's own movement,
-  `draw.ts` has the shared drawing helpers including the ink outline every object is drawn with.
-- `src/characters/` — `import.ts` builds a character's sprite sheet in the browser from the
-  imported artwork, `sprite.ts` draws one. A sheet is three rows (praying, wailing, sad) of three
-  384×480 panels (body, head, parts in front of the head); the sizes are in `shared/schema.ts`.
-  Old two-row sheets and manifests without a sad pose remain supported, using prayer as the
-  fallback. Artwork stays in the character library rather than the source repository.
+- `src/admin/` — admin page.
+- `src/reveal/` — reveal page. `kinds/` has one file per reveal.
+- `src/characters/` — builds and draws character sprite sheets.
+
+### Storage
+
+One Durable Object holds every event. The original event is stored under `event` (shown as event
+id `main`) and cannot be deleted; other events are stored as `event:<id>`. The character library is
+one list under `characters`, with each sprite sheet under `character-image:<id>`.
