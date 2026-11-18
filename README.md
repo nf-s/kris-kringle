@@ -16,12 +16,21 @@ buying for.
 Each person is given one of five objects. All of them work by touch, and on a phone by moving the
 phone itself.
 
-|                  |                             Egg                             |                       Jack-in-the-box                        |                             Present                             |                             Cracker                             |                          Snow globe                           |
-| ---------------- | :---------------------------------------------------------: | :----------------------------------------------------------: | :-------------------------------------------------------------: | :-------------------------------------------------------------: | :-----------------------------------------------------------: |
-|                  |           ![Egg](docs/screenshots/reveal-egg.png)           |     ![Jack-in-the-box](docs/screenshots/reveal-jack.png)     |         ![Present](docs/screenshots/reveal-present.png)         |         ![Cracker](docs/screenshots/reveal-cracker.png)         |       ![Snow globe](docs/screenshots/reveal-globe.png)        |
-| On screen        |                             Tap                             |                       Turn the handle                        |                         Pull the ribbon                         |                          Pull one end                           |                             Shake                             |
-| Moving the phone |                            Jolt                             |                            Twist                             |                              Flick                              |                              Flick                              |                             Shake                             |
-|                  | [Try it](https://kris-kringle.nf-s.workers.dev/preview/egg) | [Try it](https://kris-kringle.nf-s.workers.dev/preview/jack) | [Try it](https://kris-kringle.nf-s.workers.dev/preview/present) | [Try it](https://kris-kringle.nf-s.workers.dev/preview/cracker) | [Try it](https://kris-kringle.nf-s.workers.dev/preview/globe) |
+<p align="center">
+  <a href="https://kris-kringle.nf-s.workers.dev/preview/egg"><img src="docs/screenshots/reveal-egg.png" width="19%" alt="Egg"></a>
+  <a href="https://kris-kringle.nf-s.workers.dev/preview/jack"><img src="docs/screenshots/reveal-jack.png" width="19%" alt="Jack-in-the-box"></a>
+  <a href="https://kris-kringle.nf-s.workers.dev/preview/present"><img src="docs/screenshots/reveal-present.png" width="19%" alt="Present"></a>
+  <a href="https://kris-kringle.nf-s.workers.dev/preview/cracker"><img src="docs/screenshots/reveal-cracker.png" width="19%" alt="Cracker"></a>
+  <a href="https://kris-kringle.nf-s.workers.dev/preview/globe"><img src="docs/screenshots/reveal-globe.png" width="19%" alt="Snow globe"></a>
+</p>
+
+| Reveal          | On screen       | Moving the phone | Sample                                                          |
+| --------------- | --------------- | ---------------- | --------------------------------------------------------------- |
+| Egg             | Tap             | Jolt             | [Try it](https://kris-kringle.nf-s.workers.dev/preview/egg)     |
+| Jack-in-the-box | Turn the handle | Twist            | [Try it](https://kris-kringle.nf-s.workers.dev/preview/jack)    |
+| Present         | Pull the ribbon | Flick            | [Try it](https://kris-kringle.nf-s.workers.dev/preview/present) |
+| Cracker         | Pull one end    | Flick            | [Try it](https://kris-kringle.nf-s.workers.dev/preview/cracker) |
+| Snow globe      | Shake           | Shake            | [Try it](https://kris-kringle.nf-s.workers.dev/preview/globe)   |
 
 The "Try it" links use sample data. Phones that report movement show a "Motion on / Motion off"
 button; on an iPhone it starts off and turning it on brings up the system's permission prompt.
