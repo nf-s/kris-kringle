@@ -5,7 +5,7 @@
 Secret-gift draw. Each person gets a private link and has to open an object to see who they are
 buying for.
 
-# [kris-kringle.nf-s.workers.dev](https://kris-kringle.nf-s.workers.dev)
+# [kris-kringle.nf-s.workers.dev](https://kris-kringle.nf-s.workers.dev/preview/egg)
 
 <img src="docs/screenshots/reveal.gif" width="280" alt="An egg is tapped until it cracks open and shows a name">
 
